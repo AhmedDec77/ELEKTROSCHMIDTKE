@@ -24,6 +24,13 @@ const PERSON_PALETTE = [
   "#2B6CB0", "#2F855A", "#B7791F", "#6B46C1",
   "#EA580C", "#0B7285", "#B83280", "#4A5568",
 ];
+function nextAvailableColor(mitarbeiterListe) {
+  const used = new Set(mitarbeiterListe.map((m) => m.farbe));
+  const free = PERSON_PALETTE.find((c) => !used.has(c));
+  if (free) return free;
+  // Toutes les couleurs de la palette sont déjà prises : on boucle en fonction du nombre total.
+  return PERSON_PALETTE[mitarbeiterListe.length % PERSON_PALETTE.length];
+}
 
 function hexToRgba(hex, alpha) {
   const h = hex.replace("#", "");
@@ -209,7 +216,7 @@ export default function Baustellenplanung() {
   const addMitarbeiter = async () => {
     const name = newName.trim();
     if (!name) return null;
-    const color = PERSON_PALETTE[data.mitarbeiter.length % PERSON_PALETTE.length];
+    const color = nextAvailableColor(data.mitarbeiter);
     const { data: inserted, error: err } = await supabase
       .from("mitarbeiter")
       .insert({ name, farbe: color, ist_admin: newIsAdmin })
