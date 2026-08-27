@@ -479,9 +479,9 @@ export default function Baustellenplanung() {
 
       {/* SIDEBAR */}
       <div className={`app-sidebar${sidebarOpen ? " open" : ""}`} style={{ background: COLORS.bgDark, color: COLORS.textLight, display: "flex", flexDirection: "column" }}>
-        <div style={{ padding: "18px 18px 14px" }}>
-          <img src="/logo.png" alt="Elektro Schmidtke" style={{ width: "100%", maxWidth: 180, display: "block" }} />
-          <div style={{ fontSize: 11, letterSpacing: "0.12em", color: COLORS.textLightMuted, fontWeight: 700, textTransform: "uppercase", marginTop: 8 }}>Baustellenplanung</div>
+        <div style={{ padding: 14 }}>
+          <img src="/logo.png" alt="Elektro Schmidtke" style={{ width: "100%", maxWidth: 200, display: "block" }} />
+          <div style={{ fontSize: 11, letterSpacing: "0.12em", color: COLORS.textLightMuted, fontWeight: 700, textTransform: "uppercase", marginTop: 10, paddingLeft: 4 }}>Baustellenplanung</div>
         </div>
 
         <div style={{ padding: "4px 10px", flex: 1, overflowY: "auto" }}>
