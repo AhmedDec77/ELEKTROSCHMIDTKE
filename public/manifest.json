@@ -1,13 +1,13 @@
 {
-  "name": "Baustellenplanung",
-  "short_name": "Baustellen",
+  "name": "Elektro Schmidtke – Baustellenplanung",
+  "short_name": "Schmidtke",
   "description": "Planung und Koordination der Baustellen und Mitarbeiter",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#1C2126",
-  "theme_color": "#FF7A29",
+  "background_color": "#DCEAE3",
+  "theme_color": "#BC313F",
   "icons": [
     {
       "src": "/icon-192.png",
