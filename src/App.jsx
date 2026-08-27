@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Plus, X, MapPin, User, ChevronLeft, ChevronRight, Trash2, Users, LogOut, ShieldCheck, Calendar as CalendarIcon, Mail, Phone, Home, Send, Menu as MenuIcon, Clock } from "lucide-react";
+import { Plus, X, MapPin, User, ChevronLeft, ChevronRight, Trash2, Users, LogOut, ShieldCheck, Calendar as CalendarIcon, Mail, Phone, Home, Send, Menu as MenuIcon, Clock, ClipboardList, Building2, Search } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
 const COLORS = {
@@ -109,6 +109,7 @@ function mapMitarbeiterRow(row) {
 function mapBaustelleRow(row, zuweisungenRows) {
   return {
     id: row.id,
+    kundeId: row.kunde_id || null,
     kunde: row.kunde,
     kontaktName: row.kontakt_name || "",
     kontaktTelefon: row.kontakt_telefon || "",
@@ -125,6 +126,17 @@ function mapBaustelleRow(row, zuweisungenRows) {
       .map((z) => ({ mitarbeiterId: z.mitarbeiter_id, beginn: z.beginn, ende: z.ende })),
   };
 }
+function mapKundeRow(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    kontaktName: row.kontakt_name || "",
+    kontaktTelefon: row.kontakt_telefon || "",
+    strasse: row.strasse || "",
+    plz: row.plz || "",
+    stadt: row.stadt || "",
+  };
+}
 function formatAdresse(b) {
   const zeile2 = [b.plz, b.stadt].filter(Boolean).join(" ");
   return [b.strasse, zeile2].filter(Boolean).join(", ");
@@ -135,9 +147,14 @@ function formatZeitraum(b) {
   if (b.endzeit) return `bis ${b.endzeit}`;
   return "";
 }
+function projektStatus(b) {
+  const heute = fmt(new Date());
+  return b.ende < heute ? "abgeschlossen" : "aktiv";
+}
 
 const EMPTY_FORM = {
   id: null,
+  kundeId: null,
   kunde: "",
   kontaktName: "",
   kontaktTelefon: "",
@@ -151,11 +168,13 @@ const EMPTY_FORM = {
   endzeit: "",
   zuweisungen: [], // [{ mitarbeiterId, beginn, ende }]
 };
+const EMPTY_KUNDE_FORM = { id: null, name: "", kontaktName: "", kontaktTelefon: "", strasse: "", plz: "", stadt: "" };
 
 export default function Baustellenplanung() {
-  const [data, setData] = useState({ mitarbeiter: [], baustellen: [] });
+  const [data, setData] = useState({ mitarbeiter: [], baustellen: [], kunden: [] });
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(null);
+  const [page, setPage] = useState("kalender"); // kalender | projekte | kunden
 
   const [currentUserId, setCurrentUserId] = useState(undefined); // undefined = pas encore chargé
   const [view, setView] = useState("woche"); // tag | woche | monat
@@ -169,22 +188,26 @@ export default function Baustellenplanung() {
   const [newName, setNewName] = useState("");
   const [newIsAdmin, setNewIsAdmin] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false); // menu mobile
+  const [kundeModalOpen, setKundeModalOpen] = useState(false);
+  const [kundeForm, setKundeForm] = useState(EMPTY_KUNDE_FORM);
 
   // --- Chargement des données depuis Supabase ---
   const loadData = useCallback(async () => {
     try {
-      const [{ data: mRows, error: mErr }, { data: bRows, error: bErr }, { data: zRows, error: zErr }] = await Promise.all([
+      const [{ data: mRows, error: mErr }, { data: bRows, error: bErr }, { data: zRows, error: zErr }, { data: kRows, error: kErr }] = await Promise.all([
         supabase.from("mitarbeiter").select("*").order("created_at", { ascending: true }),
         supabase.from("baustellen").select("*").order("created_at", { ascending: true }),
         supabase.from("zuweisungen").select("*"),
+        supabase.from("kunden").select("*").order("name", { ascending: true }),
       ]);
-      if (mErr || bErr || zErr) {
-        setError(`Fehler beim Laden: ${(mErr || bErr || zErr).message}`);
+      if (mErr || bErr || zErr || kErr) {
+        setError(`Fehler beim Laden: ${(mErr || bErr || zErr || kErr).message}`);
         return;
       }
       setData({
         mitarbeiter: (mRows || []).map(mapMitarbeiterRow),
         baustellen: (bRows || []).map((row) => mapBaustelleRow(row, zRows)),
+        kunden: (kRows || []).map(mapKundeRow),
       });
       setError(null);
     } catch (e) {
@@ -285,6 +308,50 @@ export default function Baustellenplanung() {
     return `mailto:${encodeURIComponent(person.email || "")}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
   };
 
+  // --- Kunden (clients) ---
+  const openNewKunde = () => { setKundeForm(EMPTY_KUNDE_FORM); setKundeModalOpen(true); };
+  const openEditKunde = (k) => { setKundeForm(k); setKundeModalOpen(true); };
+  const saveKunde = async () => {
+    if (!kundeForm.name.trim()) return;
+    const fields = {
+      name: kundeForm.name.trim(),
+      kontakt_name: kundeForm.kontaktName.trim(),
+      kontakt_telefon: kundeForm.kontaktTelefon.trim(),
+      strasse: kundeForm.strasse.trim(),
+      plz: kundeForm.plz.trim(),
+      stadt: kundeForm.stadt.trim(),
+    };
+    if (kundeForm.id) {
+      const { error: err } = await supabase.from("kunden").update(fields).eq("id", kundeForm.id);
+      if (err) { setError(`Fehler beim Speichern: ${err.message}`); return; }
+      setData((d) => ({ ...d, kunden: d.kunden.map((k) => (k.id === kundeForm.id ? { ...kundeForm } : k)) }));
+    } else {
+      const { data: inserted, error: err } = await supabase.from("kunden").insert(fields).select().single();
+      if (err) { setError(`Fehler beim Speichern: ${err.message}`); return; }
+      setData((d) => ({ ...d, kunden: [...d.kunden, mapKundeRow(inserted)].sort((a, b) => a.name.localeCompare(b.name)) }));
+    }
+    setKundeModalOpen(false);
+  };
+  const deleteKunde = async () => {
+    const { error: err } = await supabase.from("kunden").delete().eq("id", kundeForm.id);
+    if (err) { setError(`Fehler beim Löschen: ${err.message}`); return; }
+    setData((d) => ({ ...d, kunden: d.kunden.filter((k) => k.id !== kundeForm.id) }));
+    setKundeModalOpen(false);
+  };
+  // Applique les valeurs par défaut d'un client sélectionné aux champs du formulaire de chantier
+  const applyKundeToForm = (kunde) => {
+    setForm((f) => ({
+      ...f,
+      kundeId: kunde.id,
+      kunde: kunde.name,
+      kontaktName: kunde.kontaktName,
+      kontaktTelefon: kunde.kontaktTelefon,
+      strasse: kunde.strasse,
+      plz: kunde.plz,
+      stadt: kunde.stadt,
+    }));
+  };
+
   // --- Baustellen ---
   const openNewBaustelle = (prefillDate) => {
     const start = prefillDate ? fmt(prefillDate) : fmt(new Date());
@@ -332,7 +399,30 @@ export default function Baustellenplanung() {
       return;
     }
 
+    // Si aucun client existant n'est lié, on en crée un nouveau à la volée
+    // (réutilisable ensuite pour d'autres projets), sans jamais modifier
+    // rétroactivement un client déjà lié quand on édite un projet existant.
+    let kundeId = form.kundeId;
+    if (!kundeId) {
+      const { data: neuerKunde, error: kErr } = await supabase
+        .from("kunden")
+        .insert({
+          name: form.kunde.trim(),
+          kontakt_name: form.kontaktName.trim(),
+          kontakt_telefon: form.kontaktTelefon.trim(),
+          strasse: form.strasse.trim(),
+          plz: form.plz.trim(),
+          stadt: form.stadt.trim(),
+        })
+        .select()
+        .single();
+      if (kErr) { setError(`Fehler beim Anlegen des Kunden: ${kErr.message}`); return; }
+      kundeId = neuerKunde.id;
+      setData((d) => ({ ...d, kunden: [...d.kunden, mapKundeRow(neuerKunde)].sort((a, b) => a.name.localeCompare(b.name)) }));
+    }
+
     const baustelleFields = {
+      kunde_id: kundeId,
       kunde: form.kunde.trim(),
       kontakt_name: form.kontaktName.trim(),
       kontakt_telefon: form.kontaktTelefon.trim(),
@@ -372,6 +462,7 @@ export default function Baustellenplanung() {
 
     const savedBaustelle = {
       id: baustelleId,
+      kundeId: baustelleFields.kunde_id,
       kunde: baustelleFields.kunde,
       kontaktName: baustelleFields.kontakt_name,
       kontaktTelefon: baustelleFields.kontakt_telefon,
@@ -535,6 +626,28 @@ export default function Baustellenplanung() {
           <div style={{ fontSize: 11, letterSpacing: "0.12em", color: COLORS.textLightMuted, fontWeight: 700, textTransform: "uppercase", marginTop: 10, paddingLeft: 4 }}>Baustellenplanung</div>
         </div>
 
+        <div style={{ padding: "0 10px 10px", display: "flex", flexDirection: "column", gap: 2 }}>
+          {[
+            ["kalender", CalendarIcon, "Kalender"],
+            ["projekte", ClipboardList, "Projekte"],
+            ["kunden", Building2, "Kunden"],
+          ].map(([key, Icon, label]) => (
+            <button
+              key={key}
+              onClick={() => { setPage(key); setSidebarOpen(false); }}
+              style={{
+                width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 9,
+                padding: "9px 10px", borderRadius: 8, border: "none", cursor: "pointer",
+                background: page === key ? COLORS.accent : "transparent",
+                color: page === key ? "#fff" : COLORS.textLightMuted,
+                fontSize: 13.5, fontWeight: page === key ? 700 : 500,
+              }}
+            >
+              <Icon size={15} /> {label}
+            </button>
+          ))}
+        </div>
+
         <div style={{ padding: "4px 10px", flex: 1, overflowY: "auto" }}>
           {isAdmin && (
             <button
@@ -629,87 +742,113 @@ export default function Baustellenplanung() {
 
       {/* MAIN */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-        <div className="app-topbar" style={{ background: COLORS.card, borderBottom: `1px solid ${COLORS.border}`, padding: "14px 22px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
-          <button
-            className="hamburger-btn"
-            onClick={() => setSidebarOpen(true)}
-            style={{
-              alignItems: "center", justifyContent: "center", width: 44, height: 44, borderRadius: 10,
-              border: `1px solid ${COLORS.border}`, background: COLORS.card, cursor: "pointer", color: COLORS.textDark,
-              flexShrink: 0, WebkitTapHighlightColor: "transparent",
-            }}
-          >
-            <MenuIcon size={20} />
-          </button>
-          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <button onClick={goPrev} style={navBtnStyle}><ChevronLeft size={17} /></button>
-            <button onClick={goToday} style={{ ...navBtnStyle, width: "auto", padding: "0 12px", fontSize: 12.5, fontWeight: 700 }}>Heute</button>
-            <button onClick={goNext} style={navBtnStyle}><ChevronRight size={17} /></button>
-          </div>
-
-          <div style={{ fontSize: 16.5, fontWeight: 700, textTransform: "capitalize", flex: 1, minWidth: 160 }}>
-            {headerLabel()}
-          </div>
-
-          <div style={{ display: "flex", background: COLORS.bgMain, borderRadius: 8, padding: 3, gap: 2 }}>
-            {[["tag", "Tag"], ["woche", "Woche"], ["monat", "Monat"]].map(([v, label]) => (
+        {page === "kalender" && (
+          <>
+            <div className="app-topbar" style={{ background: COLORS.card, borderBottom: `1px solid ${COLORS.border}`, padding: "14px 22px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
               <button
-                key={v}
-                onClick={() => setView(v)}
+                className="hamburger-btn"
+                onClick={() => setSidebarOpen(true)}
                 style={{
-                  padding: "6px 13px", borderRadius: 6, border: "none", cursor: "pointer",
-                  fontSize: 12.5, fontWeight: 700,
-                  background: view === v ? COLORS.card : "transparent",
-                  color: view === v ? COLORS.textDark : COLORS.textMuted,
-                  boxShadow: view === v ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
+                  alignItems: "center", justifyContent: "center", width: 44, height: 44, borderRadius: 10,
+                  border: `1px solid ${COLORS.border}`, background: COLORS.card, cursor: "pointer", color: COLORS.textDark,
+                  flexShrink: 0, WebkitTapHighlightColor: "transparent",
                 }}
               >
-                {label}
+                <MenuIcon size={20} />
               </button>
-            ))}
-          </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <button onClick={goPrev} style={navBtnStyle}><ChevronLeft size={17} /></button>
+                <button onClick={goToday} style={{ ...navBtnStyle, width: "auto", padding: "0 12px", fontSize: 12.5, fontWeight: 700 }}>Heute</button>
+                <button onClick={goNext} style={navBtnStyle}><ChevronRight size={17} /></button>
+              </div>
 
-          <button
-            onClick={() => openNewBaustelle(currentDate)}
-            style={{
-              display: "flex", alignItems: "center", gap: 6, background: COLORS.accent, color: "#fff",
-              border: "none", borderRadius: 8, padding: "9px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer",
-            }}
-          >
-            <Plus size={16} /> Neue Baustelle
-          </button>
-        </div>
+              <div style={{ fontSize: 16.5, fontWeight: 700, textTransform: "capitalize", flex: 1, minWidth: 160 }}>
+                {headerLabel()}
+              </div>
 
-        {error && <div style={{ background: "#FDECEA", color: "#B42318", fontSize: 12.5, padding: "8px 22px" }}>{error}</div>}
-        {!isAdmin && (
-          <div style={{ background: "#EFF4FB", color: "#2B4C7E", fontSize: 12, padding: "7px 22px" }}>
-            Du siehst nur deine eigene Planung. Für die gesamte Unternehmensübersicht wende dich an einen Admin.
-          </div>
+              <div style={{ display: "flex", background: COLORS.bgMain, borderRadius: 8, padding: 3, gap: 2 }}>
+                {[["tag", "Tag"], ["woche", "Woche"], ["monat", "Monat"]].map(([v, label]) => (
+                  <button
+                    key={v}
+                    onClick={() => setView(v)}
+                    style={{
+                      padding: "6px 13px", borderRadius: 6, border: "none", cursor: "pointer",
+                      fontSize: 12.5, fontWeight: 700,
+                      background: view === v ? COLORS.card : "transparent",
+                      color: view === v ? COLORS.textDark : COLORS.textMuted,
+                      boxShadow: view === v ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              <button
+                onClick={() => openNewBaustelle(currentDate)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6, background: COLORS.accent, color: "#fff",
+                  border: "none", borderRadius: 8, padding: "9px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer",
+                }}
+              >
+                <Plus size={16} /> Neue Baustelle
+              </button>
+            </div>
+
+            {error && <div style={{ background: "#FDECEA", color: "#B42318", fontSize: 12.5, padding: "8px 22px" }}>{error}</div>}
+            {!isAdmin && (
+              <div style={{ background: "#EFF4FB", color: "#2B4C7E", fontSize: 12, padding: "7px 22px" }}>
+                Du siehst nur deine eigene Planung. Für die gesamte Unternehmensübersicht wende dich an einen Admin.
+              </div>
+            )}
+
+            <div style={{ flex: 1, overflow: "auto", padding: 20 }}>
+              {view === "monat" && (
+                <MonthView
+                  grid={monthGrid}
+                  currentDate={currentDate}
+                  baustellenFor={baustellenFor}
+                  alleMitarbeiter={data.mitarbeiter}
+                  onDayClick={openNewBaustelle}
+                  onBaustelleClick={openEditBaustelle}
+                />
+              )}
+              {(view === "woche" || view === "tag") && (
+                <ResourceView
+                  dates={view === "tag" ? [currentDate] : weekDates}
+                  mitarbeiter={displayedColleagues.length ? displayedColleagues : visibleMitarbeiterList}
+                  baustellen={data.baustellen}
+                  alleMitarbeiter={data.mitarbeiter}
+                  isAdmin={isAdmin && !filterId}
+                  onCellClick={openNewBaustelle}
+                  onBaustelleClick={openEditBaustelle}
+                />
+              )}
+            </div>
+          </>
         )}
 
-        <div style={{ flex: 1, overflow: "auto", padding: 20 }}>
-          {view === "monat" && (
-            <MonthView
-              grid={monthGrid}
-              currentDate={currentDate}
-              baustellenFor={baustellenFor}
-              alleMitarbeiter={data.mitarbeiter}
-              onDayClick={openNewBaustelle}
-              onBaustelleClick={openEditBaustelle}
-            />
-          )}
-          {(view === "woche" || view === "tag") && (
-            <ResourceView
-              dates={view === "tag" ? [currentDate] : weekDates}
-              mitarbeiter={displayedColleagues.length ? displayedColleagues : visibleMitarbeiterList}
-              baustellen={data.baustellen}
-              alleMitarbeiter={data.mitarbeiter}
-              isAdmin={isAdmin && !filterId}
-              onCellClick={openNewBaustelle}
-              onBaustelleClick={openEditBaustelle}
-            />
-          )}
-        </div>
+        {page === "projekte" && (
+          <ProjekteListPage
+            baustellen={data.baustellen}
+            alleMitarbeiter={data.mitarbeiter}
+            onOpenSidebar={() => setSidebarOpen(true)}
+            onNew={() => openNewBaustelle()}
+            onEdit={openEditBaustelle}
+            error={error}
+          />
+        )}
+
+        {page === "kunden" && (
+          <KundenListPage
+            kunden={data.kunden}
+            baustellen={data.baustellen}
+            onOpenSidebar={() => setSidebarOpen(true)}
+            onNew={openNewKunde}
+            onEdit={openEditKunde}
+            error={error}
+          />
+        )}
       </div>
 
       {modalOpen && (
@@ -718,12 +857,24 @@ export default function Baustellenplanung() {
           setForm={setForm}
           mitarbeiterListe={isAdmin ? data.mitarbeiter : data.mitarbeiter.filter((m) => m.id === currentUserId)}
           alleMitarbeiter={data.mitarbeiter}
+          alleKunden={data.kunden}
+          onSelectKunde={applyKundeToForm}
           onToggleMitarbeiter={toggleFormMitarbeiter}
           onUpdateZuweisung={updateFormZuweisung}
           conflicts={findConflicts(form)}
           onSave={saveBaustelle}
           onDelete={form.id ? deleteBaustelle : null}
           onClose={() => setModalOpen(false)}
+        />
+      )}
+
+      {kundeModalOpen && (
+        <KundeModal
+          form={kundeForm}
+          setForm={setKundeForm}
+          onSave={saveKunde}
+          onDelete={kundeForm.id ? deleteKunde : null}
+          onClose={() => setKundeModalOpen(false)}
         />
       )}
 
@@ -981,8 +1132,14 @@ function ResourceView({ dates, mitarbeiter, baustellen, alleMitarbeiter, isAdmin
   );
 }
 
-function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, onToggleMitarbeiter, onUpdateZuweisung, conflicts, onSave, onDelete, onClose }) {
+function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, alleKunden, onSelectKunde, onToggleMitarbeiter, onUpdateZuweisung, conflicts, onSave, onDelete, onClose }) {
   const conflictsFor = (id) => conflicts.filter((c) => c.mitarbeiterId === id);
+  const [kundeSuche, setKundeSuche] = useState("");
+  const [kundeDropdownOpen, setKundeDropdownOpen] = useState(false);
+  const kundeMatches = kundeSuche.trim()
+    ? alleKunden.filter((k) => k.name.toLowerCase().includes(kundeSuche.trim().toLowerCase()))
+    : alleKunden;
+
   return (
     <div style={overlayStyle} onClick={onClose}>
       <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
@@ -992,7 +1149,52 @@ function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, onTo
         </div>
 
         <Field label="Kunde">
-          <input style={inputStyle} value={form.kunde} onChange={(e) => setForm({ ...form, kunde: e.target.value })} placeholder="Name des Kunden" />
+          <div style={{ position: "relative" }}>
+            <input
+              style={inputStyle} value={form.kunde}
+              onChange={(e) => {
+                setForm({ ...form, kunde: e.target.value, kundeId: null });
+                setKundeSuche(e.target.value);
+                setKundeDropdownOpen(true);
+              }}
+              onFocus={() => { setKundeSuche(form.kunde); setKundeDropdownOpen(true); }}
+              onBlur={() => setTimeout(() => setKundeDropdownOpen(false), 150)}
+              placeholder="Kunde suchen oder neu eingeben"
+            />
+            {form.kundeId && (
+              <div style={{ fontSize: 10.5, color: COLORS.brandGreen, fontWeight: 700, marginTop: 4 }}>
+                ✓ Bestehender Kunde verknüpft
+              </div>
+            )}
+            {!form.kundeId && form.kunde.trim() && (
+              <div style={{ fontSize: 10.5, color: COLORS.textMuted, marginTop: 4 }}>
+                Neuer Kunde — wird beim Speichern in der Kundenliste angelegt.
+              </div>
+            )}
+            {kundeDropdownOpen && kundeMatches.length > 0 && (
+              <div style={{
+                position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 61,
+                background: "#fff", borderRadius: 10, border: `1px solid ${COLORS.border}`,
+                boxShadow: "0 8px 24px rgba(0,0,0,0.14)", padding: 6, maxHeight: 200, overflowY: "auto",
+              }}>
+                {kundeMatches.map((k) => (
+                  <button
+                    key={k.id}
+                    onMouseDown={() => { onSelectKunde(k); setKundeDropdownOpen(false); }}
+                    style={{
+                      display: "block", width: "100%", textAlign: "left", padding: "8px 10px", borderRadius: 7,
+                      border: "none", background: "transparent", cursor: "pointer", fontSize: 13, color: COLORS.textDark,
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "#F6F5F2")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                  >
+                    <div style={{ fontWeight: 700 }}>{k.name}</div>
+                    {formatAdresse(k) && <div style={{ fontSize: 11, color: COLORS.textMuted }}>{formatAdresse(k)}</div>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </Field>
         <div style={{ display: "flex", gap: 10 }}>
           <Field label="Ansprechpartner" style={{ flex: 1 }}>
@@ -1321,6 +1523,253 @@ function TeamModal({ mitarbeiter, newName, setNewName, newIsAdmin, setNewIsAdmin
           Admin (sieht die gesamte Unternehmensplanung)
         </label>
         <button onClick={onAdd} style={{ ...btnPrimary, width: "100%" }}>Hinzufügen</button>
+      </div>
+    </div>
+  );
+}
+
+function PageHeader({ onOpenSidebar, title, actionLabel, onAction }) {
+  return (
+    <div className="app-topbar" style={{ background: COLORS.card, borderBottom: `1px solid ${COLORS.border}`, padding: "14px 22px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+      <button
+        className="hamburger-btn"
+        onClick={onOpenSidebar}
+        style={{
+          alignItems: "center", justifyContent: "center", width: 44, height: 44, borderRadius: 10,
+          border: `1px solid ${COLORS.border}`, background: COLORS.card, cursor: "pointer", color: COLORS.textDark,
+          flexShrink: 0, WebkitTapHighlightColor: "transparent",
+        }}
+      >
+        <MenuIcon size={20} />
+      </button>
+      <div style={{ fontSize: 18, fontWeight: 800, flex: 1 }}>{title}</div>
+      {onAction && (
+        <button
+          onClick={onAction}
+          style={{
+            display: "flex", alignItems: "center", gap: 6, background: COLORS.accent, color: "#fff",
+            border: "none", borderRadius: 8, padding: "9px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer",
+          }}
+        >
+          <Plus size={16} /> {actionLabel}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ProjekteListPage({ baustellen, alleMitarbeiter, onOpenSidebar, onNew, onEdit, error }) {
+  const [suche, setSuche] = useState("");
+  const [statusFilter, setStatusFilter] = useState("alle"); // alle | aktiv | abgeschlossen
+
+  const gefiltert = baustellen
+    .filter((b) => {
+      if (statusFilter !== "alle" && projektStatus(b) !== statusFilter) return false;
+      if (!suche.trim()) return true;
+      const q = suche.trim().toLowerCase();
+      return b.kunde.toLowerCase().includes(q) || formatAdresse(b).toLowerCase().includes(q);
+    })
+    .sort((a, b) => (a.beginn < b.beginn ? 1 : -1));
+
+  const namenFuer = (b) =>
+    (b.zuweisungen || [])
+      .map((z) => alleMitarbeiter.find((m) => m.id === z.mitarbeiterId)?.name)
+      .filter(Boolean)
+      .join(", ");
+
+  return (
+    <>
+      <PageHeader onOpenSidebar={onOpenSidebar} title="Projekte" actionLabel="Neue Baustelle" onAction={onNew} />
+      {error && <div style={{ background: "#FDECEA", color: "#B42318", fontSize: 12.5, padding: "8px 22px" }}>{error}</div>}
+
+      <div style={{ padding: "16px 22px 0", display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ position: "relative", flex: 1, minWidth: 200 }}>
+          <Search size={14} style={{ position: "absolute", left: 11, top: 12, color: COLORS.textMuted }} />
+          <input
+            style={{ ...inputStyle, paddingLeft: 32 }} value={suche}
+            onChange={(e) => setSuche(e.target.value)} placeholder="Kunde oder Adresse suchen…"
+          />
+        </div>
+        <div style={{ display: "flex", background: COLORS.bgMain, borderRadius: 8, padding: 3, gap: 2 }}>
+          {[["alle", "Alle"], ["aktiv", "Aktiv"], ["abgeschlossen", "Abgeschlossen"]].map(([v, label]) => (
+            <button
+              key={v}
+              onClick={() => setStatusFilter(v)}
+              style={{
+                padding: "7px 13px", borderRadius: 6, border: "none", cursor: "pointer",
+                fontSize: 12.5, fontWeight: 700,
+                background: statusFilter === v ? COLORS.card : "transparent",
+                color: statusFilter === v ? COLORS.textDark : COLORS.textMuted,
+                boxShadow: statusFilter === v ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ flex: 1, overflow: "auto", padding: 20 }}>
+        {gefiltert.length === 0 ? (
+          <div style={{ textAlign: "center", color: COLORS.textMuted, fontSize: 13.5, padding: 40 }}>
+            Keine Projekte gefunden.
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {gefiltert.map((b) => {
+              const status = projektStatus(b);
+              return (
+                <div
+                  key={b.id}
+                  onClick={() => onEdit(b)}
+                  style={{
+                    background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 10,
+                    padding: "12px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap",
+                  }}
+                >
+                  <div style={{ flex: 1, minWidth: 180 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14, color: COLORS.textDark }}>{b.kunde}</div>
+                    {formatAdresse(b) && (
+                      <div style={{ fontSize: 12, color: COLORS.textMuted, display: "flex", alignItems: "center", gap: 4, marginTop: 2 }}>
+                        <MapPin size={11} /> {formatAdresse(b)}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 12.5, color: COLORS.textMuted, minWidth: 140 }}>
+                    {b.beginn} → {b.ende}
+                    {formatZeitraum(b) && <div style={{ fontSize: 11 }}>{formatZeitraum(b)}</div>}
+                  </div>
+                  <div style={{ fontSize: 12, color: COLORS.textMuted, minWidth: 140 }}>
+                    {namenFuer(b) || <span style={{ fontStyle: "italic" }}>Nicht zugewiesen</span>}
+                  </div>
+                  <div style={{
+                    fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 20, textTransform: "uppercase",
+                    background: status === "aktiv" ? "#EAF6EF" : "#F1F0EC",
+                    color: status === "aktiv" ? COLORS.brandGreen : COLORS.textMuted,
+                  }}>
+                    {status === "aktiv" ? "Aktiv" : "Abgeschlossen"}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+function KundenListPage({ kunden, baustellen, onOpenSidebar, onNew, onEdit, error }) {
+  const [suche, setSuche] = useState("");
+  const gefiltert = kunden
+    .filter((k) => !suche.trim() || k.name.toLowerCase().includes(suche.trim().toLowerCase()))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const projektAnzahl = (kundeId) => baustellen.filter((b) => b.kundeId === kundeId).length;
+
+  return (
+    <>
+      <PageHeader onOpenSidebar={onOpenSidebar} title="Kunden" actionLabel="Neuer Kunde" onAction={onNew} />
+      {error && <div style={{ background: "#FDECEA", color: "#B42318", fontSize: 12.5, padding: "8px 22px" }}>{error}</div>}
+
+      <div style={{ padding: "16px 22px 0" }}>
+        <div style={{ position: "relative", maxWidth: 360 }}>
+          <Search size={14} style={{ position: "absolute", left: 11, top: 12, color: COLORS.textMuted }} />
+          <input
+            style={{ ...inputStyle, paddingLeft: 32 }} value={suche}
+            onChange={(e) => setSuche(e.target.value)} placeholder="Kunde suchen…"
+          />
+        </div>
+      </div>
+
+      <div style={{ flex: 1, overflow: "auto", padding: 20 }}>
+        {gefiltert.length === 0 ? (
+          <div style={{ textAlign: "center", color: COLORS.textMuted, fontSize: 13.5, padding: 40 }}>
+            Keine Kunden gefunden.
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
+            {gefiltert.map((k) => (
+              <div
+                key={k.id}
+                onClick={() => onEdit(k)}
+                style={{
+                  background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 10,
+                  padding: "14px 16px", cursor: "pointer",
+                }}
+              >
+                <div style={{ fontWeight: 700, fontSize: 14.5, color: COLORS.textDark, display: "flex", alignItems: "center", gap: 7 }}>
+                  <Building2 size={15} style={{ color: COLORS.textMuted, flexShrink: 0 }} /> {k.name}
+                </div>
+                {formatAdresse(k) && (
+                  <div style={{ fontSize: 12, color: COLORS.textMuted, display: "flex", alignItems: "center", gap: 4, marginTop: 6 }}>
+                    <MapPin size={11} /> {formatAdresse(k)}
+                  </div>
+                )}
+                {k.kontaktName && (
+                  <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 3 }}>
+                    {k.kontaktName}{k.kontaktTelefon ? ` · ${k.kontaktTelefon}` : ""}
+                  </div>
+                )}
+                <div style={{ fontSize: 11, fontWeight: 700, color: COLORS.accent, marginTop: 8 }}>
+                  {projektAnzahl(k.id)} Projekt{projektAnzahl(k.id) !== 1 ? "e" : ""}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+function KundeModal({ form, setForm, onSave, onDelete, onClose }) {
+  return (
+    <div style={overlayStyle} onClick={onClose}>
+      <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <div style={{ fontSize: 16, fontWeight: 800 }}>{form.id ? "Kunde bearbeiten" : "Neuer Kunde"}</div>
+          <button onClick={onClose} style={{ border: "none", background: "transparent", cursor: "pointer", color: COLORS.textMuted }}><X size={18} /></button>
+        </div>
+
+        <Field label="Name">
+          <input style={inputStyle} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Firmen- oder Kundenname" />
+        </Field>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Field label="Ansprechpartner" style={{ flex: 1 }}>
+            <input style={inputStyle} value={form.kontaktName} onChange={(e) => setForm({ ...form, kontaktName: e.target.value })} placeholder="Name des Kontakts" />
+          </Field>
+          <Field label="Telefon" style={{ flex: 1 }}>
+            <input type="tel" style={inputStyle} value={form.kontaktTelefon} onChange={(e) => setForm({ ...form, kontaktTelefon: e.target.value })} placeholder="+49 …" />
+          </Field>
+        </div>
+        <Field label="Straße und Hausnummer">
+          <input style={inputStyle} value={form.strasse} onChange={(e) => setForm({ ...form, strasse: e.target.value })} placeholder="Musterstraße 12" />
+        </Field>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Field label="PLZ" style={{ flex: "0 0 110px" }}>
+            <input style={inputStyle} value={form.plz} onChange={(e) => setForm({ ...form, plz: e.target.value })} placeholder="72336" />
+          </Field>
+          <Field label="Stadt" style={{ flex: 1 }}>
+            <input style={inputStyle} value={form.stadt} onChange={(e) => setForm({ ...form, stadt: e.target.value })} placeholder="Balingen" />
+          </Field>
+        </div>
+        <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: -6, marginBottom: 14 }}>
+          Diese Angaben sind die Standardwerte für neue Projekte dieses Kunden — pro Projekt änderbar, ohne den Kunden selbst zu ändern.
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
+          {onDelete && (
+            <button onClick={onDelete} style={{ ...btnSecondary, color: "#B42318", borderColor: "#F3D6D2", display: "flex", alignItems: "center", gap: 6 }}>
+              <Trash2 size={14} /> Löschen
+            </button>
+          )}
+          <div style={{ flex: 1 }} />
+          <button onClick={onClose} style={btnSecondary}>Abbrechen</button>
+          <button onClick={onSave} disabled={!form.name.trim()} style={{ ...btnPrimary, opacity: form.name.trim() ? 1 : 0.5 }}>
+            Speichern
+          </button>
+        </div>
       </div>
     </div>
   );
