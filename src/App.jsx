@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Plus, X, MapPin, User, ChevronLeft, ChevronRight, Trash2, Users, LogOut, ShieldCheck, Calendar as CalendarIcon, Mail, Phone, Home, Send, Menu as MenuIcon } from "lucide-react";
+import { Plus, X, MapPin, User, ChevronLeft, ChevronRight, Trash2, Users, LogOut, ShieldCheck, Calendar as CalendarIcon, Mail, Phone, Home, Send, Menu as MenuIcon, Clock } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
 const COLORS = {
@@ -118,6 +118,8 @@ function mapBaustelleRow(row, zuweisungenRows) {
     stadt: row.stadt || "",
     beginn: row.beginn,
     ende: row.ende,
+    startzeit: row.startzeit ? row.startzeit.slice(0, 5) : "",
+    endzeit: row.endzeit ? row.endzeit.slice(0, 5) : "",
     zuweisungen: (zuweisungenRows || [])
       .filter((z) => z.baustelle_id === row.id)
       .map((z) => ({ mitarbeiterId: z.mitarbeiter_id, beginn: z.beginn, ende: z.ende })),
@@ -126,6 +128,12 @@ function mapBaustelleRow(row, zuweisungenRows) {
 function formatAdresse(b) {
   const zeile2 = [b.plz, b.stadt].filter(Boolean).join(" ");
   return [b.strasse, zeile2].filter(Boolean).join(", ");
+}
+function formatZeitraum(b) {
+  if (b.startzeit && b.endzeit) return `${b.startzeit} – ${b.endzeit}`;
+  if (b.startzeit) return `ab ${b.startzeit}`;
+  if (b.endzeit) return `bis ${b.endzeit}`;
+  return "";
 }
 
 const EMPTY_FORM = {
@@ -139,6 +147,8 @@ const EMPTY_FORM = {
   stadt: "",
   beginn: fmt(new Date()),
   ende: fmt(new Date()),
+  startzeit: "",
+  endzeit: "",
   zuweisungen: [], // [{ mitarbeiterId, beginn, ende }]
 };
 
@@ -332,6 +342,8 @@ export default function Baustellenplanung() {
       stadt: form.stadt.trim(),
       beginn: form.beginn,
       ende: form.ende,
+      startzeit: form.startzeit || null,
+      endzeit: form.endzeit || null,
     };
 
     let baustelleId = form.id;
@@ -369,6 +381,8 @@ export default function Baustellenplanung() {
       stadt: baustelleFields.stadt,
       beginn: baustelleFields.beginn,
       ende: baustelleFields.ende,
+      startzeit: form.startzeit || "",
+      endzeit: form.endzeit || "",
       zuweisungen: form.zuweisungen,
     };
     setData((d) => ({
@@ -939,6 +953,11 @@ function ResourceView({ dates, mitarbeiter, baustellen, alleMitarbeiter, isAdmin
                           <MapPin size={9} /> {formatAdresse(b)}
                         </div>
                       )}
+                      {formatZeitraum(b) && (
+                        <div style={{ color: COLORS.textMuted, fontSize: 10.5, display: "flex", alignItems: "center", gap: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <Clock size={9} /> {formatZeitraum(b)}
+                        </div>
+                      )}
                       {b.zuweisungen && b.zuweisungen.length > 1 && alleMitarbeiter && (
                         <div style={{ display: "flex", gap: 3, marginTop: 3 }}>
                           {b.zuweisungen.filter((z) => isZuweisungAktivAm(z, d)).map((z) => {
@@ -1037,6 +1056,20 @@ function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, onTo
         </div>
         <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: -6, marginBottom: 12 }}>
           Jeder Mitarbeiter kann einen eigenen Zeitraum haben, aber nur innerhalb der Projektdauer.
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Field label="Uhrzeit von (optional)" style={{ flex: 1 }}>
+            <input
+              type="time" style={inputStyle} value={form.startzeit}
+              onChange={(e) => setForm({ ...form, startzeit: e.target.value })}
+            />
+          </Field>
+          <Field label="Uhrzeit bis (optional)" style={{ flex: 1 }}>
+            <input
+              type="time" style={inputStyle} value={form.endzeit}
+              onChange={(e) => setForm({ ...form, endzeit: e.target.value })}
+            />
+          </Field>
         </div>
 
         <Field label="Zugewiesene Mitarbeiter">
