@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Plus, X, MapPin, User, ChevronLeft, ChevronRight, Trash2, Users, LogOut, ShieldCheck, Calendar as CalendarIcon, Mail, Phone, Home, Send } from "lucide-react";
+import { Plus, X, MapPin, User, ChevronLeft, ChevronRight, Trash2, Users, LogOut, ShieldCheck, Calendar as CalendarIcon, Mail, Phone, Home, Send, Menu as MenuIcon } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
 const COLORS = {
@@ -137,6 +137,7 @@ export default function Baustellenplanung() {
   const [profileMitarbeiterId, setProfileMitarbeiterId] = useState(null);
   const [newName, setNewName] = useState("");
   const [newIsAdmin, setNewIsAdmin] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false); // menu mobile
 
   // --- Chargement des données depuis Supabase ---
   const loadData = useCallback(async () => {
@@ -455,8 +456,27 @@ export default function Baustellenplanung() {
 
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: COLORS.bgMain, fontFamily: "system-ui, -apple-system, sans-serif", color: COLORS.textDark }}>
+      <style>{`
+        .app-sidebar { width: 220px; flex-shrink: 0; }
+        .hamburger-btn { display: none; }
+        .sidebar-backdrop { display: none; }
+        @media (max-width: 768px) {
+          .app-sidebar {
+            position: fixed; top: 0; left: 0; bottom: 0; width: 260px; z-index: 100;
+            transform: translateX(-100%); transition: transform 0.25s ease;
+          }
+          .app-sidebar.open { transform: translateX(0); }
+          .hamburger-btn { display: flex !important; }
+          .sidebar-backdrop.open {
+            display: block; position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 90;
+          }
+        }
+      `}</style>
+
+      <div className={`sidebar-backdrop${sidebarOpen ? " open" : ""}`} onClick={() => setSidebarOpen(false)} />
+
       {/* SIDEBAR */}
-      <div style={{ width: 220, background: COLORS.bgDark, color: COLORS.textLight, display: "flex", flexDirection: "column", flexShrink: 0 }}>
+      <div className={`app-sidebar${sidebarOpen ? " open" : ""}`} style={{ background: COLORS.bgDark, color: COLORS.textLight, display: "flex", flexDirection: "column" }}>
         <div style={{ padding: "20px 18px 14px" }}>
           <div style={{ fontSize: 11, letterSpacing: "0.12em", color: COLORS.accent, fontWeight: 700, textTransform: "uppercase" }}>Planung</div>
           <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.01em", marginTop: 2 }}>Baustellen</div>
@@ -465,7 +485,7 @@ export default function Baustellenplanung() {
         <div style={{ padding: "4px 10px", flex: 1, overflowY: "auto" }}>
           {isAdmin && (
             <button
-              onClick={() => setFilterId(null)}
+              onClick={() => { setFilterId(null); setSidebarOpen(false); }}
               style={{
                 width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 8,
                 padding: "9px 10px", borderRadius: 8, marginBottom: 2, border: "none", cursor: "pointer",
@@ -490,7 +510,7 @@ export default function Baustellenplanung() {
               }}
             >
               <button
-                onClick={() => setProfileMitarbeiterId(m.id)}
+                onClick={() => { setProfileMitarbeiterId(m.id); setSidebarOpen(false); }}
                 title="Profil öffnen"
                 style={{
                   flex: 1, textAlign: "left", display: "flex", alignItems: "center", gap: 8, minWidth: 0,
@@ -505,7 +525,7 @@ export default function Baustellenplanung() {
               </button>
               {isAdmin && (
                 <button
-                  onClick={() => setFilterId(m.id)}
+                  onClick={() => { setFilterId(m.id); setSidebarOpen(false); }}
                   title="Planung dieses Mitarbeiters anzeigen"
                   style={{
                     padding: "8px 9px", border: "none", background: "transparent", cursor: "pointer",
@@ -551,6 +571,16 @@ export default function Baustellenplanung() {
       {/* MAIN */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         <div style={{ background: COLORS.card, borderBottom: `1px solid ${COLORS.border}`, padding: "14px 22px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+          <button
+            className="hamburger-btn"
+            onClick={() => setSidebarOpen(true)}
+            style={{
+              alignItems: "center", justifyContent: "center", width: 36, height: 36, borderRadius: 8,
+              border: `1px solid ${COLORS.border}`, background: COLORS.card, cursor: "pointer", color: COLORS.textDark,
+            }}
+          >
+            <MenuIcon size={18} />
+          </button>
           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
             <button onClick={goPrev} style={navBtnStyle}><ChevronLeft size={17} /></button>
             <button onClick={goToday} style={{ ...navBtnStyle, width: "auto", padding: "0 12px", fontSize: 12.5, fontWeight: 700 }}>Heute</button>
