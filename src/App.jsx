@@ -490,6 +490,8 @@ export default function Baustellenplanung() {
         .app-sidebar { width: 220px; flex-shrink: 0; }
         .hamburger-btn { display: none; }
         .sidebar-backdrop { display: none; }
+        .app-topbar { padding-top: calc(14px + env(safe-area-inset-top)); }
+        .app-sidebar { padding-top: env(safe-area-inset-top); }
         @media (max-width: 768px) {
           .app-sidebar {
             position: fixed; top: 0; left: 0; bottom: 0; width: 260px; z-index: 100;
@@ -606,16 +608,17 @@ export default function Baustellenplanung() {
 
       {/* MAIN */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-        <div style={{ background: COLORS.card, borderBottom: `1px solid ${COLORS.border}`, padding: "14px 22px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+        <div className="app-topbar" style={{ background: COLORS.card, borderBottom: `1px solid ${COLORS.border}`, padding: "14px 22px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
           <button
             className="hamburger-btn"
             onClick={() => setSidebarOpen(true)}
             style={{
-              alignItems: "center", justifyContent: "center", width: 36, height: 36, borderRadius: 8,
+              alignItems: "center", justifyContent: "center", width: 44, height: 44, borderRadius: 10,
               border: `1px solid ${COLORS.border}`, background: COLORS.card, cursor: "pointer", color: COLORS.textDark,
+              flexShrink: 0, WebkitTapHighlightColor: "transparent",
             }}
           >
-            <MenuIcon size={18} />
+            <MenuIcon size={20} />
           </button>
           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
             <button onClick={goPrev} style={navBtnStyle}><ChevronLeft size={17} /></button>
