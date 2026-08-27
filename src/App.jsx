@@ -243,7 +243,7 @@ export default function Baustellenplanung() {
   const updateMitarbeiterProfil = async (id, fields) => {
     const { error: err } = await supabase
       .from("mitarbeiter")
-      .update({ email: fields.email, telefon: fields.telefon, adresse: fields.adresse })
+      .update({ name: fields.name, email: fields.email, telefon: fields.telefon, adresse: fields.adresse })
       .eq("id", id);
     if (err) {
       setError(`Fehler beim Speichern: ${err.message}`);
@@ -1158,6 +1158,7 @@ function AddMitarbeiterButton({ verfuegbar, onAdd }) {
 }
 
 function ProfileModal({ person, canEdit, onSave, onSendWochenplan, onClose }) {
+  const [name, setName] = useState(person?.name || "");
   const [email, setEmail] = useState(person?.email || "");
   const [telefon, setTelefon] = useState(person?.telefon || "");
   const [adresse, setAdresse] = useState(person?.adresse || "");
@@ -1166,7 +1167,8 @@ function ProfileModal({ person, canEdit, onSave, onSendWochenplan, onClose }) {
   if (!person) return null;
 
   const handleSave = () => {
-    onSave({ email: email.trim(), telefon: telefon.trim(), adresse: adresse.trim() });
+    if (!name.trim()) return;
+    onSave({ name: name.trim(), email: email.trim(), telefon: telefon.trim(), adresse: adresse.trim() });
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   };
@@ -1183,6 +1185,12 @@ function ProfileModal({ person, canEdit, onSave, onSendWochenplan, onClose }) {
           <button onClick={onClose} style={{ border: "none", background: "transparent", cursor: "pointer", color: COLORS.textMuted }}><X size={18} /></button>
         </div>
 
+        <Field label="Name">
+          <input
+            style={inputStyle} value={name}
+            onChange={(e) => setName(e.target.value)} placeholder="Vor- und Nachname" disabled={!canEdit}
+          />
+        </Field>
         <Field label="E-Mail">
           <div style={{ position: "relative" }}>
             <Mail size={14} style={{ position: "absolute", left: 10, top: 11, color: COLORS.textMuted }} />
