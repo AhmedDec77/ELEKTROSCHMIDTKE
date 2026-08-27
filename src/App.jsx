@@ -103,8 +103,12 @@ function mapBaustelleRow(row, zuweisungenRows) {
   return {
     id: row.id,
     kunde: row.kunde,
+    kontaktName: row.kontakt_name || "",
+    kontaktTelefon: row.kontakt_telefon || "",
     beschreibung: row.beschreibung || "",
-    ort: row.ort || "",
+    strasse: row.strasse || "",
+    plz: row.plz || "",
+    stadt: row.stadt || "",
     beginn: row.beginn,
     ende: row.ende,
     zuweisungen: (zuweisungenRows || [])
@@ -112,12 +116,20 @@ function mapBaustelleRow(row, zuweisungenRows) {
       .map((z) => ({ mitarbeiterId: z.mitarbeiter_id, beginn: z.beginn, ende: z.ende })),
   };
 }
+function formatAdresse(b) {
+  const zeile2 = [b.plz, b.stadt].filter(Boolean).join(" ");
+  return [b.strasse, zeile2].filter(Boolean).join(", ");
+}
 
 const EMPTY_FORM = {
   id: null,
   kunde: "",
+  kontaktName: "",
+  kontaktTelefon: "",
   beschreibung: "",
-  ort: "",
+  strasse: "",
+  plz: "",
+  stadt: "",
   beginn: fmt(new Date()),
   ende: fmt(new Date()),
   zuweisungen: [], // [{ mitarbeiterId, beginn, ende }]
@@ -247,7 +259,7 @@ export default function Baustellenplanung() {
     const zeilen = days.map((d) => {
       const einsaetze = data.baustellen
         .filter((b) => (b.zuweisungen || []).some((z) => z.mitarbeiterId === person.id && isZuweisungAktivAm(z, d)))
-        .map((b) => `${b.kunde}${b.ort ? " – " + b.ort : ""}`);
+        .map((b) => `${b.kunde}${formatAdresse(b) ? " – " + formatAdresse(b) : ""}`);
       const label = d.toLocaleDateString("de-DE", { weekday: "long", day: "numeric", month: "long" });
       return `${label}: ${einsaetze.length ? einsaetze.join(", ") : "—"}`;
     });
@@ -305,8 +317,12 @@ export default function Baustellenplanung() {
 
     const baustelleFields = {
       kunde: form.kunde.trim(),
+      kontakt_name: form.kontaktName.trim(),
+      kontakt_telefon: form.kontaktTelefon.trim(),
       beschreibung: form.beschreibung.trim(),
-      ort: form.ort.trim(),
+      strasse: form.strasse.trim(),
+      plz: form.plz.trim(),
+      stadt: form.stadt.trim(),
       beginn: form.beginn,
       ende: form.ende,
     };
@@ -335,7 +351,19 @@ export default function Baustellenplanung() {
       if (zErr) { setError(`Fehler beim Speichern der Zuweisungen: ${zErr.message}`); return; }
     }
 
-    const savedBaustelle = { ...baustelleFields, id: baustelleId, zuweisungen: form.zuweisungen };
+    const savedBaustelle = {
+      id: baustelleId,
+      kunde: baustelleFields.kunde,
+      kontaktName: baustelleFields.kontakt_name,
+      kontaktTelefon: baustelleFields.kontakt_telefon,
+      beschreibung: baustelleFields.beschreibung,
+      strasse: baustelleFields.strasse,
+      plz: baustelleFields.plz,
+      stadt: baustelleFields.stadt,
+      beginn: baustelleFields.beginn,
+      ende: baustelleFields.ende,
+      zuweisungen: form.zuweisungen,
+    };
     setData((d) => ({
       ...d,
       baustellen: form.id
@@ -896,9 +924,9 @@ function ResourceView({ dates, mitarbeiter, baustellen, alleMitarbeiter, isAdmin
                       }}
                     >
                       <div style={{ fontWeight: 700, color: COLORS.textDark, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.kunde}</div>
-                      {b.ort && (
+                      {formatAdresse(b) && (
                         <div style={{ color: COLORS.textMuted, fontSize: 10.5, display: "flex", alignItems: "center", gap: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          <MapPin size={9} /> {b.ort}
+                          <MapPin size={9} /> {formatAdresse(b)}
                         </div>
                       )}
                       {b.zuweisungen && b.zuweisungen.length > 1 && alleMitarbeiter && (
@@ -937,12 +965,28 @@ function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, onTo
         <Field label="Kunde">
           <input style={inputStyle} value={form.kunde} onChange={(e) => setForm({ ...form, kunde: e.target.value })} placeholder="Name des Kunden" />
         </Field>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Field label="Ansprechpartner" style={{ flex: 1 }}>
+            <input style={inputStyle} value={form.kontaktName} onChange={(e) => setForm({ ...form, kontaktName: e.target.value })} placeholder="Name des Kontakts" />
+          </Field>
+          <Field label="Telefon" style={{ flex: 1 }}>
+            <input type="tel" style={inputStyle} value={form.kontaktTelefon} onChange={(e) => setForm({ ...form, kontaktTelefon: e.target.value })} placeholder="+49 …" />
+          </Field>
+        </div>
         <Field label="Beschreibung">
           <textarea style={{ ...inputStyle, minHeight: 64, resize: "vertical" }} value={form.beschreibung} onChange={(e) => setForm({ ...form, beschreibung: e.target.value })} placeholder="Auszuführende Arbeiten" />
         </Field>
-        <Field label="Ort">
-          <input style={inputStyle} value={form.ort} onChange={(e) => setForm({ ...form, ort: e.target.value })} placeholder="Adresse der Baustelle" />
+        <Field label="Straße und Hausnummer">
+          <input style={inputStyle} value={form.strasse} onChange={(e) => setForm({ ...form, strasse: e.target.value })} placeholder="Musterstraße 12" />
         </Field>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Field label="PLZ" style={{ flex: "0 0 110px" }}>
+            <input style={inputStyle} value={form.plz} onChange={(e) => setForm({ ...form, plz: e.target.value })} placeholder="72336" />
+          </Field>
+          <Field label="Stadt" style={{ flex: 1 }}>
+            <input style={inputStyle} value={form.stadt} onChange={(e) => setForm({ ...form, stadt: e.target.value })} placeholder="Balingen" />
+          </Field>
+        </div>
         <div style={{ display: "flex", gap: 10 }}>
           <Field label="Beginn (Projekt)" style={{ flex: 1 }}>
             <input
