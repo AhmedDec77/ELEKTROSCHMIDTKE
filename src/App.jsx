@@ -10,8 +10,10 @@ const COLORS = {
   card: "#FFFFFF",
   border: "#DCD9D0",
   borderSoft: "#E7E5DF",
-  accent: "#FF7A29",
-  accentDark: "#E0640F",
+  accent: "#BC313F",
+  accentDark: "#9A2833",
+  brandGreen: "#297C55",
+  brandGreenDark: "#216545",
   textDark: "#1C2126",
   textMuted: "#6B7280",
   textLight: "#F5F3EE",
@@ -20,7 +22,7 @@ const COLORS = {
 
 const PERSON_PALETTE = [
   "#2B6CB0", "#2F855A", "#B7791F", "#6B46C1",
-  "#C53030", "#0B7285", "#B83280", "#4A5568",
+  "#EA580C", "#0B7285", "#B83280", "#4A5568",
 ];
 
 function hexToRgba(hex, alpha) {
@@ -477,9 +479,9 @@ export default function Baustellenplanung() {
 
       {/* SIDEBAR */}
       <div className={`app-sidebar${sidebarOpen ? " open" : ""}`} style={{ background: COLORS.bgDark, color: COLORS.textLight, display: "flex", flexDirection: "column" }}>
-        <div style={{ padding: "20px 18px 14px" }}>
-          <div style={{ fontSize: 11, letterSpacing: "0.12em", color: COLORS.accent, fontWeight: 700, textTransform: "uppercase" }}>Planung</div>
-          <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.01em", marginTop: 2 }}>Baustellen</div>
+        <div style={{ padding: "18px 18px 14px" }}>
+          <img src="/logo.png" alt="Elektro Schmidtke" style={{ width: "100%", maxWidth: 180, display: "block" }} />
+          <div style={{ fontSize: 11, letterSpacing: "0.12em", color: COLORS.textLightMuted, fontWeight: 700, textTransform: "uppercase", marginTop: 8 }}>Baustellenplanung</div>
         </div>
 
         <div style={{ padding: "4px 10px", flex: 1, overflowY: "auto" }}>
@@ -697,7 +699,8 @@ function IdentityGate({ mitarbeiter, onChoose, newName, setNewName, newIsAdmin, 
   return (
     <div style={{ background: COLORS.bgDark, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "system-ui, sans-serif", padding: 16 }}>
       <div style={{ background: "#fff", borderRadius: 16, padding: 26, width: "100%", maxWidth: 380 }}>
-        <div style={{ fontSize: 11, letterSpacing: "0.12em", color: COLORS.accent, fontWeight: 700, textTransform: "uppercase" }}>Baustellenplanung</div>
+        <img src="/logo.png" alt="Elektro Schmidtke" style={{ width: "100%", maxWidth: 220, display: "block", margin: "0 auto 18px" }} />
+        <div style={{ fontSize: 11, letterSpacing: "0.12em", color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase" }}>Baustellenplanung</div>
         <div style={{ fontSize: 19, fontWeight: 800, margin: "2px 0 16px" }}>Wer bist du?</div>
 
         {mitarbeiter.length > 0 && (
