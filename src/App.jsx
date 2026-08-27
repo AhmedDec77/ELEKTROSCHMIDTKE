@@ -530,11 +530,17 @@ export default function Baustellenplanung() {
                   onClick={() => { setFilterId(m.id); setSidebarOpen(false); }}
                   title="Planung dieses Mitarbeiters anzeigen"
                   style={{
-                    padding: "8px 9px", border: "none", background: "transparent", cursor: "pointer",
-                    color: filterId === m.id ? COLORS.accent : COLORS.textLightMuted, flexShrink: 0,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    width: 30, height: 30, borderRadius: 8, flexShrink: 0, marginRight: 4,
+                    border: filterId === m.id ? `1.5px solid ${COLORS.accent}` : `1.5px solid transparent`,
+                    background: filterId === m.id ? COLORS.accent : COLORS.bgDarkHover,
+                    color: filterId === m.id ? "#fff" : COLORS.textLightMuted,
+                    cursor: "pointer", transition: "background 0.15s, border 0.15s",
                   }}
+                  onMouseEnter={(e) => { if (filterId !== m.id) e.currentTarget.style.background = "#3B434D"; }}
+                  onMouseLeave={(e) => { if (filterId !== m.id) e.currentTarget.style.background = COLORS.bgDarkHover; }}
                 >
-                  <CalendarIcon size={14} />
+                  <CalendarIcon size={16} />
                 </button>
               )}
             </div>
