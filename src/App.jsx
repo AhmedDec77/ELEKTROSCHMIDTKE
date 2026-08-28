@@ -98,12 +98,14 @@ function uid() {
 function mapMitarbeiterRow(row) {
   return {
     id: row.id,
+    authUserId: row.auth_user_id || null,
     name: row.name,
     email: row.email || "",
     telefon: row.telefon || "",
     adresse: row.adresse || "",
     farbe: row.farbe,
     istAdmin: row.ist_admin,
+    genehmigt: row.genehmigt !== false, // true par défaut si absent
   };
 }
 function mapBaustelleRow(row, zuweisungenRows) {
@@ -179,7 +181,6 @@ export default function Baustellenplanung() {
   const [error, setError] = useState(null);
   const [page, setPage] = useState("kalender"); // kalender | projekte | kunden
 
-  const [currentUserId, setCurrentUserId] = useState(undefined); // undefined = pas encore chargé
   const [view, setView] = useState("woche"); // tag | woche | monat
   const [currentDate, setCurrentDate] = useState(new Date());
   const [filterId, setFilterId] = useState(null); // null = ganzes Unternehmen (admin only)
@@ -193,26 +194,36 @@ export default function Baustellenplanung() {
   const [sidebarOpen, setSidebarOpen] = useState(false); // menu mobile
   const [kundeModalOpen, setKundeModalOpen] = useState(false);
   const [kundeForm, setKundeForm] = useState(EMPTY_KUNDE_FORM);
+  const [authSession, setAuthSession] = useState(undefined); // undefined = pas encore vérifié, null = pas connecté
+  const [authLoaded, setAuthLoaded] = useState(false);
 
   // --- Chargement des données depuis Supabase ---
-  const loadData = useCallback(async () => {
+  // Le mitarbeiter est lisible publiquement (nécessaire pour l'écran de connexion),
+  // le reste nécessite une session authentifiée (voir policies RLS).
+  const loadData = useCallback(async (session) => {
     try {
-      const [{ data: mRows, error: mErr }, { data: bRows, error: bErr }, { data: zRows, error: zErr }, { data: kRows, error: kErr }] = await Promise.all([
-        supabase.from("mitarbeiter").select("*").order("created_at", { ascending: true }),
-        supabase.from("baustellen").select("*").order("created_at", { ascending: true }),
-        supabase.from("zuweisungen").select("*"),
-        supabase.from("kunden").select("*").order("name", { ascending: true }),
-      ]);
-      if (mErr || bErr || zErr || kErr) {
-        setError(`Fehler beim Laden: ${(mErr || bErr || zErr || kErr).message}`);
-        return;
+      const calls = [supabase.from("mitarbeiter").select("*").order("created_at", { ascending: true })];
+      if (session) {
+        calls.push(
+          supabase.from("baustellen").select("*").order("created_at", { ascending: true }),
+          supabase.from("zuweisungen").select("*"),
+          supabase.from("kunden").select("*").order("name", { ascending: true })
+        );
+      }
+      const results = await Promise.all(calls);
+      const [{ data: mRows, error: mErr }] = results;
+      const bErrRes = results[1], zErrRes = results[2], kErrRes = results[3];
+      const anyErr = mErr || bErrRes?.error || zErrRes?.error || kErrRes?.error;
+      if (anyErr) {
+        setError(`Fehler beim Laden: ${anyErr.message}`);
+      } else {
+        setError(null);
       }
       setData({
         mitarbeiter: (mRows || []).map(mapMitarbeiterRow),
-        baustellen: (bRows || []).map((row) => mapBaustelleRow(row, zRows)),
-        kunden: (kRows || []).map(mapKundeRow),
+        baustellen: bErrRes ? (bErrRes.data || []).map((row) => mapBaustelleRow(row, zErrRes?.data)) : [],
+        kunden: kErrRes ? (kErrRes.data || []).map(mapKundeRow) : [],
       });
-      setError(null);
     } catch (e) {
       setError("Verbindung zu Supabase fehlgeschlagen. Bitte .env prüfen.");
     } finally {
@@ -220,28 +231,28 @@ export default function Baustellenplanung() {
     }
   }, []);
 
+  // --- Session Supabase Auth (remplace l'ancienne identité stockée localement) ---
   useEffect(() => {
-    loadData();
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setAuthSession(session);
+      setAuthLoaded(true);
+      loadData(session);
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAuthSession(session);
+      loadData(session);
+    });
+    return () => listener.subscription.unsubscribe();
   }, [loadData]);
 
-  // --- Identité de l'utilisateur courant : stockée localement (par appareil) ---
-  useEffect(() => {
-    const stored = localStorage.getItem("current-user-id");
-    setCurrentUserId(stored || null);
-  }, []);
-
-  const chooseUser = (id) => {
-    setCurrentUserId(id);
-    localStorage.setItem("current-user-id", id);
-  };
-  const switchUser = () => {
-    setCurrentUserId(null);
-    setFilterId(null);
-    localStorage.removeItem("current-user-id");
-  };
-
-  const me = data.mitarbeiter.find((m) => m.id === currentUserId) || null;
+  const me = data.mitarbeiter.find((m) => m.authUserId === authSession?.user?.id) || null;
+  const currentUserId = me?.id || null;
   const isAdmin = !!me?.istAdmin;
+
+  const switchUser = async () => {
+    await supabase.auth.signOut();
+    setFilterId(null);
+  };
 
   // Un employé non-admin est verrouillé sur son propre planning
   useEffect(() => {
@@ -282,6 +293,11 @@ export default function Baustellenplanung() {
       })),
     }));
     if (filterId === id) setFilterId(isAdmin ? null : filterId);
+  };
+  const approveMitarbeiter = async (id) => {
+    const { error: err } = await supabase.from("mitarbeiter").update({ genehmigt: true }).eq("id", id);
+    if (err) { setError(`Fehler beim Freischalten: ${err.message}`); return; }
+    setData((d) => ({ ...d, mitarbeiter: d.mitarbeiter.map((m) => (m.id === id ? { ...m, genehmigt: true } : m)) }));
   };
   const updateMitarbeiterProfil = async (id, fields) => {
     const { error: err } = await supabase
@@ -574,7 +590,7 @@ export default function Baustellenplanung() {
     return `${MONTH_LABELS[currentDate.getMonth()]} ${currentDate.getFullYear()}`;
   };
 
-  if (!loaded || currentUserId === undefined) {
+  if (!loaded || !authLoaded) {
     return (
       <div style={{ background: COLORS.bgMain, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "system-ui" }}>
         <div style={{ color: COLORS.textMuted }}>Planung wird geladen …</div>
@@ -582,20 +598,30 @@ export default function Baustellenplanung() {
     );
   }
 
-  if (!currentUserId || !me) {
+  if (!authSession || !me) {
     return (
       <IdentityGate
         mitarbeiter={data.mitarbeiter}
-        onChoose={chooseUser}
-        newName={newName}
-        setNewName={setNewName}
-        newIsAdmin={newIsAdmin}
-        setNewIsAdmin={setNewIsAdmin}
-        onAdd={async () => {
-          const person = await addMitarbeiter();
-          if (person) chooseUser(person.id);
-        }}
+        hatSession={!!authSession}
+        onError={setError}
+        error={error}
+        onCleanError={() => setError(null)}
       />
+    );
+  }
+
+  if (!me.genehmigt) {
+    return (
+      <div style={{ background: COLORS.bgDark, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "system-ui, sans-serif", padding: 16 }}>
+        <div style={{ background: "#fff", borderRadius: 16, padding: 30, width: "100%", maxWidth: 380, textAlign: "center" }}>
+          <div style={{ fontSize: 32, marginBottom: 10 }}>⏳</div>
+          <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 8 }}>Konto wartet auf Freischaltung</div>
+          <div style={{ fontSize: 13, color: COLORS.textMuted, marginBottom: 20 }}>
+            Amin oder Alex muss dein Konto freischalten, bevor du die Planung sehen kannst.
+          </div>
+          <button onClick={switchUser} style={{ ...btnSecondary, width: "100%" }}>Abmelden</button>
+        </div>
+      </div>
     );
   }
 
@@ -724,10 +750,19 @@ export default function Baustellenplanung() {
               style={{
                 width: "100%", padding: "9px 10px", borderRadius: 8, border: `1px solid ${COLORS.bgDarkHover}`,
                 background: "transparent", color: COLORS.textLightMuted, fontSize: 12.5, cursor: "pointer",
-                display: "flex", alignItems: "center", gap: 7, justifyContent: "center",
+                display: "flex", alignItems: "center", gap: 7, justifyContent: "center", position: "relative",
               }}
             >
               <User size={13} /> Team verwalten
+              {data.mitarbeiter.some((m) => !m.genehmigt) && (
+                <span style={{
+                  position: "absolute", top: -6, right: -6, width: 18, height: 18, borderRadius: "50%",
+                  background: COLORS.accent, color: "#fff", fontSize: 10, fontWeight: 700,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                }}>
+                  {data.mitarbeiter.filter((m) => !m.genehmigt).length}
+                </span>
+              )}
             </button>
           )}
           <button
@@ -890,6 +925,7 @@ export default function Baustellenplanung() {
           setNewIsAdmin={setNewIsAdmin}
           onAdd={addMitarbeiter}
           onRemove={removeMitarbeiter}
+          onApprove={approveMitarbeiter}
           onClose={() => setTeamModalOpen(false)}
         />
       )}
@@ -907,49 +943,247 @@ export default function Baustellenplanung() {
   );
 }
 
-function IdentityGate({ mitarbeiter, onChoose, newName, setNewName, newIsAdmin, setNewIsAdmin, onAdd }) {
+function passwortOk(pw) {
+  return pw.length >= 8;
+}
+
+function IdentityGate({ mitarbeiter, hatSession, error, onCleanError }) {
+  const [modus, setModus] = useState("login"); // login | claim | register
+  const [claimTarget, setClaimTarget] = useState(null); // profil {id, name, ...} en cours de revendication
+
+  const unclaimed = mitarbeiter.filter((m) => !m.authUserId);
+  const claimed = mitarbeiter.filter((m) => m.authUserId);
+
+  // Cas rare : session valide mais aucun profil lié (ex. suppression pendant la session)
+  if (hatSession) {
+    return (
+      <div style={{ background: COLORS.bgDark, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "system-ui, sans-serif", padding: 16 }}>
+        <div style={{ background: "#fff", borderRadius: 16, padding: 26, width: "100%", maxWidth: 380, textAlign: "center" }}>
+          <div style={{ fontSize: 14, color: COLORS.textMuted, marginBottom: 14 }}>
+            Angemeldet, aber kein Profil verknüpft. Bitte einen Admin kontaktieren.
+          </div>
+          <button onClick={() => supabase.auth.signOut()} style={{ ...btnSecondary, width: "100%" }}>Abmelden</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ background: COLORS.bgDark, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "system-ui, sans-serif", padding: 16 }}>
       <div style={{ background: "#fff", borderRadius: 16, padding: 26, width: "100%", maxWidth: 380 }}>
         <img src="/logo.png" alt="Elektro Schmidtke" style={{ width: "100%", maxWidth: 220, display: "block", margin: "0 auto 18px" }} />
         <div style={{ fontSize: 11, letterSpacing: "0.12em", color: COLORS.textMuted, fontWeight: 700, textTransform: "uppercase" }}>Baustellenplanung</div>
-        <div style={{ fontSize: 19, fontWeight: 800, margin: "2px 0 16px" }}>Wer bist du?</div>
 
-        {mitarbeiter.length > 0 && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}>
-            {mitarbeiter.map((m) => (
-              <button
-                key={m.id}
-                onClick={() => onChoose(m.id)}
-                style={{
-                  display: "flex", alignItems: "center", gap: 9, padding: "10px 12px", borderRadius: 9,
-                  border: `1px solid ${COLORS.border}`, background: "#fff", cursor: "pointer", fontSize: 13.5, fontWeight: 600,
-                }}
-              >
-                <span style={{ width: 10, height: 10, borderRadius: "50%", background: m.farbe }} />
-                {m.name}
-                {m.istAdmin && <span style={{ marginLeft: "auto", fontSize: 10.5, color: COLORS.textMuted, textTransform: "uppercase" }}>Admin</span>}
-              </button>
-            ))}
+        {error && (
+          <div style={{ background: "#FDECEA", color: "#B42318", fontSize: 12, padding: "8px 10px", borderRadius: 7, margin: "8px 0" }}>
+            {error}
           </div>
         )}
 
-        <div style={{ fontSize: 11.5, fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase", marginBottom: 6 }}>
-          {mitarbeiter.length > 0 ? "Neu hier?" : "Erste Einrichtung"}
+        {modus === "login" && (
+          <LoginForm onCleanError={onCleanError} />
+        )}
+
+        {modus === "claim" && !claimTarget && (
+          <div style={{ marginTop: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Wähle dein bestehendes Profil</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+              {unclaimed.map((m) => (
+                <button
+                  key={m.id}
+                  onClick={() => setClaimTarget(m)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 9, padding: "10px 12px", borderRadius: 9,
+                    border: `1px solid ${COLORS.border}`, background: "#fff", cursor: "pointer", fontSize: 13.5, fontWeight: 600,
+                  }}
+                >
+                  <span style={{ width: 10, height: 10, borderRadius: "50%", background: m.farbe }} />
+                  {m.name}
+                  {m.istAdmin && <span style={{ marginLeft: "auto", fontSize: 10.5, color: COLORS.textMuted, textTransform: "uppercase" }}>Admin</span>}
+                </button>
+              ))}
+              {unclaimed.length === 0 && <div style={{ fontSize: 12.5, color: COLORS.textMuted }}>Alle Profile sind bereits eingerichtet.</div>}
+            </div>
+          </div>
+        )}
+
+        {modus === "claim" && claimTarget && (
+          <ClaimForm profil={claimTarget} onBack={() => setClaimTarget(null)} onCleanError={onCleanError} />
+        )}
+
+        {modus === "register" && (
+          <RegisterForm onCleanError={onCleanError} />
+        )}
+
+        <div style={{ display: "flex", gap: 6, marginTop: 16, borderTop: `1px solid ${COLORS.borderSoft}`, paddingTop: 14, flexWrap: "wrap" }}>
+          {modus !== "login" && (
+            <button onClick={() => { setModus("login"); setClaimTarget(null); onCleanError(); }} style={{ ...btnSecondary, fontSize: 11.5, padding: "7px 10px" }}>
+              Anmelden
+            </button>
+          )}
+          {modus !== "claim" && claimed.length >= 0 && unclaimed.length > 0 && (
+            <button onClick={() => { setModus("claim"); onCleanError(); }} style={{ ...btnSecondary, fontSize: 11.5, padding: "7px 10px" }}>
+              Bestehendes Profil einrichten
+            </button>
+          )}
+          {modus !== "register" && (
+            <button onClick={() => { setModus("register"); onCleanError(); }} style={{ ...btnSecondary, fontSize: 11.5, padding: "7px 10px" }}>
+              Neu hier? Konto erstellen
+            </button>
+          )}
         </div>
-        <input
-          style={{ ...inputStyle, marginBottom: 8 }}
-          placeholder="Dein Name"
-          value={newName}
-          onChange={(e) => setNewName(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && onAdd()}
-        />
-        <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, color: COLORS.textMuted, marginBottom: 12 }}>
-          <input type="checkbox" checked={newIsAdmin} onChange={(e) => setNewIsAdmin(e.target.checked)} />
-          Admin (sieht die gesamte Unternehmensplanung)
-        </label>
-        <button onClick={onAdd} style={{ ...btnPrimary, width: "100%" }}>Weiter</button>
       </div>
+    </div>
+  );
+}
+
+function LoginForm({ onCleanError }) {
+  const [email, setEmail] = useState("");
+  const [passwort, setPasswort] = useState("");
+  const [laedt, setLaedt] = useState(false);
+  const [fehler, setFehler] = useState("");
+
+  const submit = async () => {
+    onCleanError();
+    setFehler("");
+    if (!email.trim() || !passwort) return;
+    setLaedt(true);
+    const { error: err } = await supabase.auth.signInWithPassword({ email: email.trim(), password: passwort });
+    setLaedt(false);
+    if (err) setFehler("E-Mail oder Passwort falsch.");
+  };
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div style={{ fontSize: 19, fontWeight: 800, marginBottom: 14 }}>Anmelden</div>
+      {fehler && <div style={{ background: "#FDECEA", color: "#B42318", fontSize: 12, padding: "8px 10px", borderRadius: 7, marginBottom: 10 }}>{fehler}</div>}
+      <input
+        style={{ ...inputStyle, marginBottom: 8 }} type="email" placeholder="E-Mail" value={email}
+        onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()}
+      />
+      <input
+        style={{ ...inputStyle, marginBottom: 12 }} type="password" placeholder="Passwort" value={passwort}
+        onChange={(e) => setPasswort(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()}
+      />
+      <button onClick={submit} disabled={laedt} style={{ ...btnPrimary, width: "100%", opacity: laedt ? 0.6 : 1 }}>
+        {laedt ? "…" : "Anmelden"}
+      </button>
+    </div>
+  );
+}
+
+function ClaimForm({ profil, onBack, onCleanError }) {
+  const [email, setEmail] = useState(profil.email || "");
+  const [passwort, setPasswort] = useState("");
+  const [passwort2, setPasswort2] = useState("");
+  const [laedt, setLaedt] = useState(false);
+  const [fehler, setFehler] = useState("");
+
+  const submit = async () => {
+    onCleanError();
+    setFehler("");
+    if (!email.trim()) { setFehler("Bitte E-Mail-Adresse angeben."); return; }
+    if (!passwortOk(passwort)) { setFehler("Passwort muss mindestens 8 Zeichen haben."); return; }
+    if (passwort !== passwort2) { setFehler("Passwörter stimmen nicht überein."); return; }
+    setLaedt(true);
+    const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({ email: email.trim(), password: passwort });
+    if (signUpErr) {
+      setLaedt(false);
+      setFehler(signUpErr.message.includes("already registered") ? "Diese E-Mail ist bereits registriert." : "Fehler bei der Registrierung.");
+      return;
+    }
+    const userId = signUpData.user?.id;
+    if (userId) {
+      const { error: updErr } = await supabase.from("mitarbeiter").update({ auth_user_id: userId, email: email.trim() }).eq("id", profil.id);
+      if (updErr) { setLaedt(false); setFehler("Konto erstellt, aber Verknüpfung fehlgeschlagen. Bitte Admin kontaktieren."); return; }
+    }
+    setLaedt(false);
+    // La session est active automatiquement après signUp (si "Confirm email" deaktiviert ist in Supabase) ;
+    // onAuthStateChange im Hauptkomponenten übernimmt den Rest.
+  };
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+        <span style={{ width: 10, height: 10, borderRadius: "50%", background: profil.farbe }} />
+        <div style={{ fontSize: 17, fontWeight: 800 }}>{profil.name} — Passwort festlegen</div>
+      </div>
+      {fehler && <div style={{ background: "#FDECEA", color: "#B42318", fontSize: 12, padding: "8px 10px", borderRadius: 7, marginBottom: 10 }}>{fehler}</div>}
+      <input style={{ ...inputStyle, marginBottom: 8 }} type="email" placeholder="Deine E-Mail" value={email} onChange={(e) => setEmail(e.target.value)} />
+      <input style={{ ...inputStyle, marginBottom: 8 }} type="password" placeholder="Neues Passwort (min. 8 Zeichen)" value={passwort} onChange={(e) => setPasswort(e.target.value)} />
+      <input style={{ ...inputStyle, marginBottom: 12 }} type="password" placeholder="Passwort bestätigen" value={passwort2} onChange={(e) => setPasswort2(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={onBack} style={btnSecondary}>Zurück</button>
+        <button onClick={submit} disabled={laedt} style={{ ...btnPrimary, flex: 1, opacity: laedt ? 0.6 : 1 }}>
+          {laedt ? "…" : "Passwort festlegen"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function RegisterForm({ onCleanError }) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [passwort, setPasswort] = useState("");
+  const [passwort2, setPasswort2] = useState("");
+  const [laedt, setLaedt] = useState(false);
+  const [fehler, setFehler] = useState("");
+  const [erfolg, setErfolg] = useState(false);
+
+  const submit = async () => {
+    onCleanError();
+    setFehler("");
+    if (!name.trim()) { setFehler("Bitte Namen angeben."); return; }
+    if (!email.trim()) { setFehler("Bitte E-Mail-Adresse angeben."); return; }
+    if (!passwortOk(passwort)) { setFehler("Passwort muss mindestens 8 Zeichen haben."); return; }
+    if (passwort !== passwort2) { setFehler("Passwörter stimmen nicht überein."); return; }
+    setLaedt(true);
+    const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({ email: email.trim(), password: passwort });
+    if (signUpErr) {
+      setLaedt(false);
+      setFehler(signUpErr.message.includes("already registered") ? "Diese E-Mail ist bereits registriert." : "Fehler bei der Registrierung.");
+      return;
+    }
+    const userId = signUpData.user?.id;
+    const color = PERSON_PALETTE[0]; // sera réévalué proprement à la prochaine ouverture "Team verwalten"
+    // ist_admin toujours false et genehmigt (validé) toujours false ici : un compte
+    // créé en libre-service ne doit jamais pouvoir s'octroyer lui-même des droits,
+    // et doit être validé par un admin avant d'accéder aux données.
+    const { error: insErr } = await supabase.from("mitarbeiter").insert({
+      name: name.trim(), email: email.trim(), farbe: color, ist_admin: false, genehmigt: false, auth_user_id: userId,
+    });
+    setLaedt(false);
+    if (insErr) { setFehler("Konto erstellt, aber Profil konnte nicht angelegt werden."); return; }
+    setErfolg(true);
+  };
+
+  if (erfolg) {
+    return (
+      <div style={{ marginTop: 14, textAlign: "center", padding: "10px 0" }}>
+        <div style={{ fontSize: 32, marginBottom: 8 }}>⏳</div>
+        <div style={{ fontSize: 14.5, fontWeight: 700, marginBottom: 6 }}>Konto erstellt</div>
+        <div style={{ fontSize: 12.5, color: COLORS.textMuted }}>
+          Ein Admin (Amin oder Alex) muss dein Konto noch freischalten, bevor du dich anmelden kannst.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div style={{ fontSize: 17, fontWeight: 800, marginBottom: 14 }}>Neues Konto erstellen</div>
+      {fehler && <div style={{ background: "#FDECEA", color: "#B42318", fontSize: 12, padding: "8px 10px", borderRadius: 7, marginBottom: 10 }}>{fehler}</div>}
+      <input style={{ ...inputStyle, marginBottom: 8 }} placeholder="Dein Name" value={name} onChange={(e) => setName(e.target.value)} />
+      <input style={{ ...inputStyle, marginBottom: 8 }} type="email" placeholder="E-Mail" value={email} onChange={(e) => setEmail(e.target.value)} />
+      <input style={{ ...inputStyle, marginBottom: 8 }} type="password" placeholder="Passwort (min. 8 Zeichen)" value={passwort} onChange={(e) => setPasswort(e.target.value)} />
+      <input style={{ ...inputStyle, marginBottom: 10 }} type="password" placeholder="Passwort bestätigen" value={passwort2} onChange={(e) => setPasswort2(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
+      <div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 12 }}>
+        Ein Admin muss dein Konto freischalten, bevor du die Planung sehen kannst.
+      </div>
+      <button onClick={submit} disabled={laedt} style={{ ...btnPrimary, width: "100%", opacity: laedt ? 0.6 : 1 }}>
+        {laedt ? "…" : "Konto erstellen"}
+      </button>
     </div>
   );
 }
@@ -1491,7 +1725,9 @@ function ProfileModal({ person, canEdit, onSave, onSendWochenplan, onClose }) {
   );
 }
 
-function TeamModal({ mitarbeiter, newName, setNewName, newIsAdmin, setNewIsAdmin, onAdd, onRemove, onClose }) {
+function TeamModal({ mitarbeiter, newName, setNewName, newIsAdmin, setNewIsAdmin, onAdd, onRemove, onApprove, onClose }) {
+  const wartend = mitarbeiter.filter((m) => !m.genehmigt);
+  const aktiv = mitarbeiter.filter((m) => m.genehmigt);
   return (
     <div style={overlayStyle} onClick={onClose}>
       <div style={{ ...modalStyle, maxWidth: 380 }} onClick={(e) => e.stopPropagation()}>
@@ -1500,8 +1736,32 @@ function TeamModal({ mitarbeiter, newName, setNewName, newIsAdmin, setNewIsAdmin
           <button onClick={onClose} style={{ border: "none", background: "transparent", cursor: "pointer", color: COLORS.textMuted }}><X size={18} /></button>
         </div>
 
+        {wartend.length > 0 && (
+          <>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#B45309", textTransform: "uppercase", marginBottom: 8 }}>
+              ⏳ Warten auf Freischaltung ({wartend.length})
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}>
+              {wartend.map((m) => (
+                <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: "#FFF7ED", border: "1px solid #FDE1B8", borderRadius: 8 }}>
+                  <span style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{m.name}</span>
+                  <button
+                    onClick={() => onApprove(m.id)}
+                    style={{ border: "none", background: COLORS.brandGreen, color: "#fff", borderRadius: 6, padding: "5px 9px", fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}
+                  >
+                    Genehmigen
+                  </button>
+                  <button onClick={() => onRemove(m.id)} style={{ border: "none", background: "transparent", cursor: "pointer", color: "#B42318" }} title="Ablehnen">
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
         <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 }}>
-          {mitarbeiter.map((m) => (
+          {aktiv.map((m) => (
             <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", background: "#F6F5F2", borderRadius: 8 }}>
               <span style={{ width: 9, height: 9, borderRadius: "50%", background: m.farbe }} />
               <span style={{ flex: 1, fontSize: 13.5, fontWeight: 600 }}>{m.name}</span>
@@ -1511,7 +1771,7 @@ function TeamModal({ mitarbeiter, newName, setNewName, newIsAdmin, setNewIsAdmin
               </button>
             </div>
           ))}
-          {mitarbeiter.length === 0 && <div style={{ fontSize: 12.5, color: COLORS.textMuted }}>Noch keine Mitarbeiter.</div>}
+          {aktiv.length === 0 && <div style={{ fontSize: 12.5, color: COLORS.textMuted }}>Noch keine Mitarbeiter.</div>}
         </div>
 
         <input
