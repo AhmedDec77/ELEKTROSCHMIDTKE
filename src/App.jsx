@@ -151,6 +151,9 @@ function projektStatus(b) {
   const heute = fmt(new Date());
   return b.ende < heute ? "abgeschlossen" : "aktiv";
 }
+function kundeVollstaendig(k) {
+  return !!(k.name?.trim() && k.kontaktName?.trim() && k.kontaktTelefon?.trim() && k.strasse?.trim() && k.plz?.trim() && k.stadt?.trim());
+}
 
 const EMPTY_FORM = {
   id: null,
@@ -1689,16 +1692,26 @@ function KundenListPage({ kunden, baustellen, onOpenSidebar, onNew, onEdit, erro
           </div>
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
-            {gefiltert.map((k) => (
+            {gefiltert.map((k) => {
+              const vollstaendig = kundeVollstaendig(k);
+              return (
               <div
                 key={k.id}
                 onClick={() => onEdit(k)}
                 style={{
                   background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 10,
-                  padding: "14px 16px", cursor: "pointer",
+                  padding: "14px 16px", cursor: "pointer", position: "relative",
                 }}
               >
-                <div style={{ fontWeight: 700, fontSize: 14.5, color: COLORS.textDark, display: "flex", alignItems: "center", gap: 7 }}>
+                <div style={{
+                  position: "absolute", top: 12, right: 12, fontSize: 10, fontWeight: 700, padding: "3px 9px",
+                  borderRadius: 20, textTransform: "uppercase",
+                  background: vollstaendig ? "#EAF6EF" : "#FDECEA",
+                  color: vollstaendig ? COLORS.brandGreen : "#B42318",
+                }}>
+                  {vollstaendig ? "Vollständig" : "Unvollständig"}
+                </div>
+                <div style={{ fontWeight: 700, fontSize: 14.5, color: COLORS.textDark, display: "flex", alignItems: "center", gap: 7, paddingRight: 90 }}>
                   <Building2 size={15} style={{ color: COLORS.textMuted, flexShrink: 0 }} /> {k.name}
                 </div>
                 {formatAdresse(k) && (
@@ -1715,7 +1728,8 @@ function KundenListPage({ kunden, baustellen, onOpenSidebar, onNew, onEdit, erro
                   {projektAnzahl(k.id)} Projekt{projektAnzahl(k.id) !== 1 ? "e" : ""}
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -1724,11 +1738,23 @@ function KundenListPage({ kunden, baustellen, onOpenSidebar, onNew, onEdit, erro
 }
 
 function KundeModal({ form, setForm, onSave, onDelete, onClose }) {
+  const vollstaendig = kundeVollstaendig(form);
   return (
     <div style={overlayStyle} onClick={onClose}>
       <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-          <div style={{ fontSize: 16, fontWeight: 800 }}>{form.id ? "Kunde bearbeiten" : "Neuer Kunde"}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ fontSize: 16, fontWeight: 800 }}>{form.id ? "Kunde bearbeiten" : "Neuer Kunde"}</div>
+            {form.id && (
+              <div style={{
+                fontSize: 10.5, fontWeight: 700, padding: "3px 10px", borderRadius: 20, textTransform: "uppercase",
+                background: vollstaendig ? "#EAF6EF" : "#FDECEA",
+                color: vollstaendig ? COLORS.brandGreen : "#B42318",
+              }}>
+                {vollstaendig ? "Vollständig" : "Unvollständig"}
+              </div>
+            )}
+          </div>
           <button onClick={onClose} style={{ border: "none", background: "transparent", cursor: "pointer", color: COLORS.textMuted }}><X size={18} /></button>
         </div>
 
