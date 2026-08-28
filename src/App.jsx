@@ -1050,7 +1050,7 @@ function LoginForm({ onCleanError }) {
     setLaedt(true);
     const { error: err } = await supabase.auth.signInWithPassword({ email: email.trim(), password: passwort });
     setLaedt(false);
-    if (err) setFehler("E-Mail oder Passwort falsch.");
+    if (err) setFehler(err.message === "Invalid login credentials" ? "E-Mail oder Passwort falsch." : `Anmeldefehler: ${err.message}`);
   };
 
   return (
