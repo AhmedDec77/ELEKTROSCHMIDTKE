@@ -1089,7 +1089,7 @@ function ClaimForm({ profil, onBack, onCleanError }) {
     const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({ email: email.trim(), password: passwort });
     if (signUpErr) {
       setLaedt(false);
-      setFehler(signUpErr.message.includes("already registered") ? "Diese E-Mail ist bereits registriert." : "Fehler bei der Registrierung.");
+      setFehler(signUpErr.message.includes("already registered") ? "Diese E-Mail ist bereits registriert." : `Fehler bei der Registrierung: ${signUpErr.message}`);
       return;
     }
     const userId = signUpData.user?.id;
@@ -1142,7 +1142,7 @@ function RegisterForm({ onCleanError }) {
     const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({ email: email.trim(), password: passwort });
     if (signUpErr) {
       setLaedt(false);
-      setFehler(signUpErr.message.includes("already registered") ? "Diese E-Mail ist bereits registriert." : "Fehler bei der Registrierung.");
+      setFehler(signUpErr.message.includes("already registered") ? "Diese E-Mail ist bereits registriert." : `Fehler bei der Registrierung: ${signUpErr.message}`);
       return;
     }
     const userId = signUpData.user?.id;
