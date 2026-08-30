@@ -86,6 +86,23 @@ function isZuweisungAktivAm(zuweisung, date) {
 function rangesOverlap(aBeginn, aEnde, bBeginn, bEnde) {
   return aBeginn <= bEnde && bBeginn <= aEnde;
 }
+function istWochenendtag(dateStr) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const tag = new Date(y, m - 1, d).getDay();
+  return tag === 0 || tag === 6; // Sonntag oder Samstag
+}
+function enthaeltWochenende(beginn, ende) {
+  if (!beginn || !ende) return false;
+  let cur = beginn;
+  let sicherheit = 0;
+  while (cur <= ende && sicherheit < 1000) {
+    if (istWochenendtag(cur)) return true;
+    const [y, m, d] = cur.split("-").map(Number);
+    cur = fmt(new Date(y, m - 1, d + 1));
+    sicherheit++;
+  }
+  return false;
+}
 // Compatibilité avec les anciennes données (mitarbeiterIds sans dates propres)
 function normalizeBaustelle(b) {
   if (b.zuweisungen) return b;
@@ -1377,6 +1394,16 @@ function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, alle
     ? alleKunden.filter((k) => k.name.toLowerCase().includes(kundeSuche.trim().toLowerCase()))
     : alleKunden;
 
+  const handleSave = () => {
+    const projektHatWochenende = enthaeltWochenende(form.beginn, form.ende);
+    const zuweisungHatWochenende = form.zuweisungen.some((z) => enthaeltWochenende(z.beginn, z.ende));
+    if (projektHatWochenende || zuweisungHatWochenende) {
+      const ok = window.confirm("Dieser Zeitraum umfasst ein Wochenende (Samstag und/oder Sonntag). Trotzdem speichern?");
+      if (!ok) return;
+    }
+    onSave();
+  };
+
   return (
     <div style={overlayStyle} onClick={onClose}>
       <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
@@ -1577,7 +1604,7 @@ function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, alle
           )}
           <div style={{ flex: 1 }} />
           <button onClick={onClose} style={btnSecondary}>Abbrechen</button>
-          <button onClick={onSave} disabled={!form.kunde.trim() || conflicts.length > 0} style={{ ...btnPrimary, opacity: form.kunde.trim() && conflicts.length === 0 ? 1 : 0.5 }}>
+          <button onClick={handleSave} disabled={!form.kunde.trim() || conflicts.length > 0} style={{ ...btnPrimary, opacity: form.kunde.trim() && conflicts.length === 0 ? 1 : 0.5 }}>
             Speichern
           </button>
         </div>
