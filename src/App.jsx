@@ -316,6 +316,11 @@ export default function Baustellenplanung() {
     if (err) { setError(`Fehler beim Freischalten: ${err.message}`); return; }
     setData((d) => ({ ...d, mitarbeiter: d.mitarbeiter.map((m) => (m.id === id ? { ...m, genehmigt: true } : m)) }));
   };
+  const toggleMitarbeiterAdmin = async (id, neuerWert) => {
+    const { error: err } = await supabase.from("mitarbeiter").update({ ist_admin: neuerWert }).eq("id", id);
+    if (err) { setError(`Fehler beim Ändern des Admin-Status: ${err.message}`); return; }
+    setData((d) => ({ ...d, mitarbeiter: d.mitarbeiter.map((m) => (m.id === id ? { ...m, istAdmin: neuerWert } : m)) }));
+  };
   const updateMitarbeiterProfil = async (id, fields) => {
     const { error: err } = await supabase
       .from("mitarbeiter")
@@ -936,6 +941,7 @@ export default function Baustellenplanung() {
       {teamModalOpen && isAdmin && (
         <TeamModal
           mitarbeiter={data.mitarbeiter}
+          currentUserId={currentUserId}
           newName={newName}
           setNewName={setNewName}
           newIsAdmin={newIsAdmin}
@@ -943,6 +949,7 @@ export default function Baustellenplanung() {
           onAdd={addMitarbeiter}
           onRemove={removeMitarbeiter}
           onApprove={approveMitarbeiter}
+          onToggleAdmin={toggleMitarbeiterAdmin}
           onClose={() => setTeamModalOpen(false)}
         />
       )}
@@ -1752,7 +1759,7 @@ function ProfileModal({ person, canEdit, onSave, onSendWochenplan, onClose }) {
   );
 }
 
-function TeamModal({ mitarbeiter, newName, setNewName, newIsAdmin, setNewIsAdmin, onAdd, onRemove, onApprove, onClose }) {
+function TeamModal({ mitarbeiter, currentUserId, newName, setNewName, newIsAdmin, setNewIsAdmin, onAdd, onRemove, onApprove, onToggleAdmin, onClose }) {
   const wartend = mitarbeiter.filter((m) => !m.genehmigt);
   const aktiv = mitarbeiter.filter((m) => m.genehmigt);
   return (
@@ -1790,10 +1797,26 @@ function TeamModal({ mitarbeiter, newName, setNewName, newIsAdmin, setNewIsAdmin
         <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 }}>
           {aktiv.map((m) => (
             <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", background: "#F6F5F2", borderRadius: 8 }}>
-              <span style={{ width: 9, height: 9, borderRadius: "50%", background: m.farbe }} />
-              <span style={{ flex: 1, fontSize: 13.5, fontWeight: 600 }}>{m.name}</span>
-              {m.istAdmin && <span style={{ fontSize: 10, color: COLORS.textMuted, textTransform: "uppercase", fontWeight: 700 }}>Admin</span>}
-              <button onClick={() => onRemove(m.id)} style={{ border: "none", background: "transparent", cursor: "pointer", color: COLORS.textMuted }}>
+              <span style={{ width: 9, height: 9, borderRadius: "50%", background: m.farbe, flexShrink: 0 }} />
+              <span style={{ flex: 1, fontSize: 13.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.name}</span>
+              {m.id === currentUserId ? (
+                m.istAdmin && <span style={{ fontSize: 10, color: COLORS.textMuted, textTransform: "uppercase", fontWeight: 700 }}>Admin</span>
+              ) : (
+                <button
+                  onClick={() => onToggleAdmin(m.id, !m.istAdmin)}
+                  title={m.istAdmin ? "Admin-Rechte entfernen" : "Zum Admin machen"}
+                  style={{
+                    border: `1px solid ${m.istAdmin ? COLORS.accent : COLORS.border}`,
+                    background: m.istAdmin ? COLORS.accent : "#fff",
+                    color: m.istAdmin ? "#fff" : COLORS.textMuted,
+                    borderRadius: 6, padding: "4px 8px", fontSize: 10.5, fontWeight: 700,
+                    textTransform: "uppercase", cursor: "pointer", flexShrink: 0,
+                  }}
+                >
+                  {m.istAdmin ? "Admin ✓" : "Admin machen"}
+                </button>
+              )}
+              <button onClick={() => onRemove(m.id)} style={{ border: "none", background: "transparent", cursor: "pointer", color: COLORS.textMuted, flexShrink: 0 }}>
                 <Trash2 size={14} />
               </button>
             </div>
