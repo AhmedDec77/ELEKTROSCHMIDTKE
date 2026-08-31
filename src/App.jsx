@@ -1236,6 +1236,7 @@ function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, onDayCli
           return (
             <div key={d} style={{
               padding: "10px 8px", textAlign: "center", fontSize: 10.5, fontWeight: 700, textTransform: "uppercase",
+              borderLeft: idx === 0 ? "none" : "1px solid rgba(28,33,38,0.16)",
               color: istWochenende ? COLORS.accentDark : COLORS.textMuted,
               background: istWochenende ? hexToRgba(COLORS.accent, 0.045) : "transparent",
             }}>
