@@ -86,6 +86,12 @@ function isZuweisungAktivAm(zuweisung, date) {
 function rangesOverlap(aBeginn, aEnde, bBeginn, bEnde) {
   return aBeginn <= bEnde && bBeginn <= aEnde;
 }
+function zeitenUeberlappen(aStart, aEnde, bStart, bEnde) {
+  // Si l'une des deux baustellen n'a pas d'heure précisée, on suppose
+  // prudemment qu'elle occupe toute la journée (comportement inchangé).
+  if (!aStart || !aEnde || !bStart || !bEnde) return true;
+  return aStart < bEnde && bStart < aEnde;
+}
 function istWochenendtag(dateStr) {
   const [y, m, d] = dateStr.split("-").map(Number);
   const tag = new Date(y, m - 1, d).getDay();
@@ -416,7 +422,9 @@ export default function Baustellenplanung() {
       for (const other of data.baustellen) {
         if (other.id === candidateForm.id) continue;
         for (const oz of other.zuweisungen || []) {
-          if (oz.mitarbeiterId === z.mitarbeiterId && rangesOverlap(z.beginn, z.ende, oz.beginn, oz.ende)) {
+          if (oz.mitarbeiterId === z.mitarbeiterId
+            && rangesOverlap(z.beginn, z.ende, oz.beginn, oz.ende)
+            && zeitenUeberlappen(candidateForm.startzeit, candidateForm.endzeit, other.startzeit, other.endzeit)) {
             conflicts.push({ mitarbeiterId: z.mitarbeiterId, kunde: other.kunde, beginn: oz.beginn, ende: oz.ende });
           }
         }
