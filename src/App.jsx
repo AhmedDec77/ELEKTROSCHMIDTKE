@@ -568,7 +568,7 @@ export default function Baustellenplanung() {
     const outOfRange = form.zuweisungen.filter((z) => z.beginn < form.beginn || z.ende > form.ende);
     if (outOfRange.length > 0) {
       const names = outOfRange.map((z) => data.mitarbeiter.find((m) => m.id === z.mitarbeiterId)?.name || "?");
-      setError(`Zeitraum außerhalb des Projekts: ${names.join(", ")}. Bitte innerhalb ${form.beginn} – ${form.ende} anpassen.`);
+      setError(`Zeitraum außerhalb des Termins: ${names.join(", ")}. Bitte innerhalb ${form.beginn} – ${form.ende} anpassen.`);
       return;
     }
     const conflicts = findConflicts(form);
@@ -1701,7 +1701,7 @@ function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, alle
           </Field>
         </div>
         <div style={{ display: "flex", gap: 10 }}>
-          <Field label="Beginn (Projekt)" style={{ flex: 1 }}>
+          <Field label="Beginn (Termin)" style={{ flex: 1 }}>
             <input
               type="date" style={inputStyle} value={form.beginn}
               onChange={(e) => {
@@ -1719,7 +1719,7 @@ function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, alle
               }}
             />
           </Field>
-          <Field label="Ende (Projekt)" style={{ flex: 1 }}>
+          <Field label="Ende (Termin)" style={{ flex: 1 }}>
             <input
               type="date" style={inputStyle} value={form.ende}
               onChange={(e) => {
@@ -1739,7 +1739,7 @@ function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, alle
           </Field>
         </div>
         <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: -6, marginBottom: 12 }}>
-          Jeder Mitarbeiter kann einen eigenen Zeitraum haben, aber nur innerhalb der Projektdauer.
+          Jeder Mitarbeiter kann einen eigenen Zeitraum haben, aber nur innerhalb der Termindauer.
         </div>
         <div style={{ display: "flex", gap: 10 }}>
           <Field label="Uhrzeit von (optional)" style={{ flex: 1 }}>
