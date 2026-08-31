@@ -1319,7 +1319,7 @@ function ResourceView({ dates, mitarbeiter, baustellen, alleMitarbeiter, isAdmin
           return (
             <div key={i} style={{
               padding: "10px 8px", textAlign: "center", borderLeft: `1px solid ${COLORS.borderSoft}`,
-              background: isToday ? "#FFF3EA" : "transparent",
+              background: isToday ? "#FFF3EA" : "transparent", minWidth: 0,
             }}>
               <div style={{ fontSize: 10.5, fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase" }}>
                 {d.toLocaleDateString("de-DE", { weekday: "short" })}
@@ -1346,7 +1346,7 @@ function ResourceView({ dates, mitarbeiter, baustellen, alleMitarbeiter, isAdmin
               <div
                 key={i}
                 onClick={() => onCellClick(d)}
-                style={{ borderLeft: `1px solid ${COLORS.borderSoft}`, padding: 5, minHeight: 60, cursor: "pointer", display: "flex", flexDirection: "column", gap: 3 }}
+                style={{ borderLeft: `1px solid ${COLORS.borderSoft}`, padding: 5, minHeight: 60, minWidth: 0, cursor: "pointer", display: "flex", flexDirection: "column", gap: 3 }}
               >
                 {items.map((b) => {
                   const rowColor = person.farbe || COLORS.textMuted;
@@ -1356,18 +1356,20 @@ function ResourceView({ dates, mitarbeiter, baustellen, alleMitarbeiter, isAdmin
                       onClick={(e) => { e.stopPropagation(); onBaustelleClick(b); }}
                       style={{
                         borderLeft: `3px solid ${rowColor}`, background: hexToRgba(rowColor, 0.1),
-                        borderRadius: 5, padding: "4px 6px", fontSize: 11.5,
+                        borderRadius: 5, padding: "4px 6px", fontSize: 11.5, minWidth: 0, maxWidth: "100%", boxSizing: "border-box",
                       }}
                     >
                       <div style={{ fontWeight: 700, color: COLORS.textDark, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.kunde}</div>
                       {formatAdresse(b) && (
-                        <div style={{ color: COLORS.textMuted, fontSize: 10.5, display: "flex", alignItems: "center", gap: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          <MapPin size={9} /> {formatAdresse(b)}
+                        <div style={{ color: COLORS.textMuted, fontSize: 10.5, display: "flex", alignItems: "center", gap: 3, minWidth: 0, overflow: "hidden" }}>
+                          <MapPin size={9} style={{ flexShrink: 0 }} />
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{formatAdresse(b)}</span>
                         </div>
                       )}
                       {formatZeitraum(b) && (
-                        <div style={{ color: COLORS.textMuted, fontSize: 10.5, display: "flex", alignItems: "center", gap: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          <Clock size={9} /> {formatZeitraum(b)}
+                        <div style={{ color: COLORS.textMuted, fontSize: 10.5, display: "flex", alignItems: "center", gap: 3, minWidth: 0, overflow: "hidden" }}>
+                          <Clock size={9} style={{ flexShrink: 0 }} />
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{formatZeitraum(b)}</span>
                         </div>
                       )}
                       {b.zuweisungen && b.zuweisungen.length > 1 && alleMitarbeiter && (
