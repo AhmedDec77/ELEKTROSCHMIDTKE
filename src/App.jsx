@@ -1235,9 +1235,9 @@ function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, onDayCli
           const istWochenende = idx === 5 || idx === 6; // Sa, So
           return (
             <div key={d} style={{
-              padding: "9px 0", textAlign: "center", fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase",
+              padding: "10px 8px", textAlign: "center", fontSize: 10.5, fontWeight: 700, textTransform: "uppercase",
               color: istWochenende ? COLORS.accentDark : COLORS.textMuted,
-              background: istWochenende ? hexToRgba(COLORS.accent, 0.08) : "transparent",
+              background: istWochenende ? hexToRgba(COLORS.accent, 0.045) : "transparent",
             }}>
               {d}
             </div>
