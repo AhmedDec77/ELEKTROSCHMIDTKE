@@ -134,6 +134,7 @@ function mapMitarbeiterRow(row) {
 function mapBaustelleRow(row, zuweisungenRows) {
   return {
     id: row.id,
+    projektId: row.projekt_id || null,
     kundeId: row.kunde_id || null,
     kunde: row.kunde,
     kontaktName: row.kontakt_name || "",
@@ -162,6 +163,15 @@ function mapKundeRow(row) {
     stadt: row.stadt || "",
   };
 }
+function mapProjektRow(row) {
+  return {
+    id: row.id,
+    nummer: row.nummer,
+    titel: row.titel,
+    kundeId: row.kunde_id || null,
+    status: row.status || "aktiv", // "aktiv" | "abgeschlossen" — décidé uniquement par un admin
+  };
+}
 function formatAdresse(b) {
   const zeile2 = [b.plz, b.stadt].filter(Boolean).join(" ");
   return [b.strasse, zeile2].filter(Boolean).join(", ");
@@ -172,9 +182,8 @@ function formatZeitraum(b) {
   if (b.endzeit) return `bis ${b.endzeit}`;
   return "";
 }
-function projektStatus(b) {
-  const heute = fmt(new Date());
-  return b.ende < heute ? "abgeschlossen" : "aktiv";
+function formatProjektNummer(p) {
+  return "P-" + String(p.nummer).padStart(4, "0");
 }
 function kundeVollstaendig(k) {
   return !!(k.name?.trim() && k.kontaktName?.trim() && k.kontaktTelefon?.trim() && k.strasse?.trim() && k.plz?.trim() && k.stadt?.trim());
@@ -182,6 +191,8 @@ function kundeVollstaendig(k) {
 
 const EMPTY_FORM = {
   id: null,
+  projektId: null,
+  projektTitelEingabe: "", // transitoire, sert à chercher/créer un projet — jamais stocké tel quel
   kundeId: null,
   kunde: "",
   kontaktName: "",
@@ -197,9 +208,10 @@ const EMPTY_FORM = {
   zuweisungen: [], // [{ mitarbeiterId, beginn, ende }]
 };
 const EMPTY_KUNDE_FORM = { id: null, name: "", kontaktName: "", kontaktTelefon: "", strasse: "", plz: "", stadt: "" };
+const EMPTY_PROJEKT_FORM = { id: null, titel: "", kundeId: null, kundeNameEingabe: "" };
 
 export default function Baustellenplanung() {
-  const [data, setData] = useState({ mitarbeiter: [], baustellen: [], kunden: [] });
+  const [data, setData] = useState({ mitarbeiter: [], baustellen: [], kunden: [], projekte: [] });
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(null);
   const [page, setPage] = useState("kalender"); // kalender | projekte | kunden
@@ -217,6 +229,8 @@ export default function Baustellenplanung() {
   const [sidebarOpen, setSidebarOpen] = useState(false); // menu mobile
   const [kundeModalOpen, setKundeModalOpen] = useState(false);
   const [kundeForm, setKundeForm] = useState(EMPTY_KUNDE_FORM);
+  const [projektModalOpen, setProjektModalOpen] = useState(false);
+  const [projektForm, setProjektForm] = useState(EMPTY_PROJEKT_FORM);
   const [authSession, setAuthSession] = useState(undefined); // undefined = pas encore vérifié, null = pas connecté
   const [authLoaded, setAuthLoaded] = useState(false);
 
@@ -230,13 +244,14 @@ export default function Baustellenplanung() {
         calls.push(
           supabase.from("baustellen").select("*").order("created_at", { ascending: true }),
           supabase.from("zuweisungen").select("*"),
-          supabase.from("kunden").select("*").order("name", { ascending: true })
+          supabase.from("kunden").select("*").order("name", { ascending: true }),
+          supabase.from("projekte").select("*").order("nummer", { ascending: false })
         );
       }
       const results = await Promise.all(calls);
       const [{ data: mRows, error: mErr }] = results;
-      const bErrRes = results[1], zErrRes = results[2], kErrRes = results[3];
-      const anyErr = mErr || bErrRes?.error || zErrRes?.error || kErrRes?.error;
+      const bErrRes = results[1], zErrRes = results[2], kErrRes = results[3], pErrRes = results[4];
+      const anyErr = mErr || bErrRes?.error || zErrRes?.error || kErrRes?.error || pErrRes?.error;
       if (anyErr) {
         setError(`Fehler beim Laden: ${anyErr.message}`);
       } else {
@@ -246,6 +261,7 @@ export default function Baustellenplanung() {
         mitarbeiter: (mRows || []).map(mapMitarbeiterRow),
         baustellen: bErrRes ? (bErrRes.data || []).map((row) => mapBaustelleRow(row, zErrRes?.data)) : [],
         kunden: kErrRes ? (kErrRes.data || []).map(mapKundeRow) : [],
+        projekte: pErrRes ? (pErrRes.data || []).map(mapProjektRow) : [],
       });
     } catch (e) {
       setError("Verbindung zu Supabase fehlgeschlagen. Bitte .env prüfen.");
@@ -399,6 +415,70 @@ export default function Baustellenplanung() {
     }));
   };
 
+  // --- Projekte ---
+  // Un Projekt regroupe plusieurs rendez-vous (Baustellen/Termine). Son statut
+  // (aktiv/abgeschlossen) est décidé UNIQUEMENT par un admin — jamais déduit
+  // automatiquement d'une date de fin de rendez-vous.
+  const openNewProjekt = (kundeId) => {
+    const kunde = kundeId ? data.kunden.find((k) => k.id === kundeId) : null;
+    setProjektForm({ ...EMPTY_PROJEKT_FORM, kundeId: kundeId || null, kundeNameEingabe: kunde?.name || "" });
+    setProjektModalOpen(true);
+  };
+  const openEditProjekt = (p) => {
+    const kunde = p.kundeId ? data.kunden.find((k) => k.id === p.kundeId) : null;
+    setProjektForm({ id: p.id, titel: p.titel, kundeId: p.kundeId, kundeNameEingabe: kunde?.name || "" });
+    setProjektModalOpen(true);
+  };
+  const saveProjekt = async () => {
+    if (!projektForm.titel.trim() || !projektForm.kundeNameEingabe.trim()) return null;
+
+    // Un Projekt est toujours rattaché à un client : si aucun client existant
+    // n'a été sélectionné, on en crée un nouveau à partir du nom saisi.
+    let kundeId = projektForm.kundeId;
+    if (!kundeId) {
+      const { data: neuerKunde, error: kErr } = await supabase
+        .from("kunden")
+        .insert({ name: projektForm.kundeNameEingabe.trim() })
+        .select()
+        .single();
+      if (kErr) { setError(`Fehler beim Anlegen des Kunden: ${kErr.message}`); return null; }
+      kundeId = neuerKunde.id;
+      setData((d) => ({ ...d, kunden: [...d.kunden, mapKundeRow(neuerKunde)].sort((a, b) => a.name.localeCompare(b.name)) }));
+    }
+
+    if (projektForm.id) {
+      const { error: err } = await supabase.from("projekte").update({ titel: projektForm.titel.trim(), kunde_id: kundeId }).eq("id", projektForm.id);
+      if (err) { setError(`Fehler beim Speichern: ${err.message}`); return null; }
+      const updated = { ...data.projekte.find((p) => p.id === projektForm.id), titel: projektForm.titel.trim(), kundeId };
+      setData((d) => ({ ...d, projekte: d.projekte.map((p) => (p.id === projektForm.id ? updated : p)) }));
+      setProjektModalOpen(false);
+      return updated;
+    } else {
+      const { data: inserted, error: err } = await supabase
+        .from("projekte")
+        .insert({ titel: projektForm.titel.trim(), kunde_id: kundeId, status: "aktiv" })
+        .select()
+        .single();
+      if (err) { setError(`Fehler beim Speichern: ${err.message}`); return null; }
+      const neu = mapProjektRow(inserted);
+      setData((d) => ({ ...d, projekte: [neu, ...d.projekte] }));
+      setProjektModalOpen(false);
+      return neu;
+    }
+  };
+  const toggleProjektStatus = async (id, neuerStatus) => {
+    const { error: err } = await supabase.from("projekte").update({ status: neuerStatus }).eq("id", id);
+    if (err) { setError(`Fehler beim Ändern des Status: ${err.message}`); return; }
+    setData((d) => ({ ...d, projekte: d.projekte.map((p) => (p.id === id ? { ...p, status: neuerStatus } : p)) }));
+  };
+  const deleteProjekt = async () => {
+    const { error: err } = await supabase.from("projekte").delete().eq("id", projektForm.id);
+    if (err) { setError(`Fehler beim Löschen: ${err.message}`); return; }
+    setData((d) => ({ ...d, projekte: d.projekte.filter((p) => p.id !== projektForm.id) }));
+    setProjektModalOpen(false);
+  };
+  
+
   // --- Baustellen ---
   const openNewBaustelle = (prefillDate) => {
     const start = prefillDate ? fmt(prefillDate) : fmt(new Date());
@@ -413,7 +493,9 @@ export default function Baustellenplanung() {
     setModalOpen(true);
   };
   const openEditBaustelle = (b) => {
-    setForm(normalizeBaustelle(b));
+    const norm = normalizeBaustelle(b);
+    const projekt = norm.projektId ? data.projekte.find((p) => p.id === norm.projektId) : null;
+    setForm({ ...norm, projektTitelEingabe: projekt ? projekt.titel : "" });
     setModalOpen(true);
   };
   const findConflicts = (candidateForm) => {
@@ -431,6 +513,54 @@ export default function Baustellenplanung() {
       }
     }
     return conflicts;
+  };
+
+  // Détermine automatiquement à quel projet rattacher un NOUVEAU rendez-vous,
+  // en fonction des projets déjà actifs du client concerné.
+  const erstelleNeuesProjekt = async (kundeId, kundeName) => {
+    const titel = window.prompt(`Neues Projekt für ${kundeName} — wie soll es heißen? (leer lassen für automatischen Titel)`, "");
+    if (titel === null) return null; // annulé
+    const finalTitel = titel.trim() || `Projekt ${kundeName}`;
+    const { data: inserted, error: err } = await supabase
+      .from("projekte")
+      .insert({ titel: finalTitel, kunde_id: kundeId, status: "aktiv" })
+      .select()
+      .single();
+    if (err) { setError(`Fehler beim Anlegen des Projekts: ${err.message}`); return null; }
+    const neu = mapProjektRow(inserted);
+    setData((d) => ({ ...d, projekte: [neu, ...d.projekte] }));
+    return neu.id;
+  };
+  const resolveProjektFuerBuchung = async (kundeId, kundeName) => {
+    const aktiveProjekte = data.projekte.filter((p) => p.kundeId === kundeId && p.status === "aktiv");
+
+    if (aktiveProjekte.length === 0) {
+      return erstelleNeuesProjekt(kundeId, kundeName);
+    }
+
+    if (aktiveProjekte.length === 1) {
+      const p = aktiveProjekte[0];
+      const gehoert = window.confirm(
+        `Gehört dieser Termin zum aktiven Projekt "${formatProjektNummer(p)} — ${p.titel}"?\n\nOK = ja, diesem Projekt zuordnen.\nAbbrechen = nein, neues Projekt anlegen.`
+      );
+      if (gehoert) return p.id;
+      return erstelleNeuesProjekt(kundeId, kundeName);
+    }
+
+    // Plusieurs projets actifs pour ce client : demander lequel.
+    const liste = aktiveProjekte.map((p, i) => `${i + 1}. ${formatProjektNummer(p)} — ${p.titel}`).join("\n");
+    const eingabe = window.prompt(
+      `Mehrere aktive Projekte für ${kundeName} gefunden. Welchem Projekt gehört dieser Termin an?\n\n${liste}\n\nZahl eingeben, oder "neu" für ein neues Projekt:`,
+      "1"
+    );
+    if (eingabe === null) return null; // annulé
+    if (eingabe.trim().toLowerCase() === "neu") {
+      return erstelleNeuesProjekt(kundeId, kundeName);
+    }
+    const idx = parseInt(eingabe.trim(), 10) - 1;
+    if (idx >= 0 && idx < aktiveProjekte.length) return aktiveProjekte[idx].id;
+    setError('Ungültige Eingabe. Bitte "Speichern" erneut klicken und eine gültige Zahl oder "neu" eingeben.');
+    return null;
   };
 
   const saveBaustelle = async () => {
@@ -470,7 +600,16 @@ export default function Baustellenplanung() {
       setData((d) => ({ ...d, kunden: [...d.kunden, mapKundeRow(neuerKunde)].sort((a, b) => a.name.localeCompare(b.name)) }));
     }
 
+    // Projekt : résolu automatiquement pour un NOUVEAU Termin (jamais
+    // re-demandé lors de la modification d'un Termin déjà existant).
+    let projektId = form.projektId;
+    if (!form.id) {
+      projektId = await resolveProjektFuerBuchung(kundeId, form.kunde.trim());
+      if (!projektId) return; // l'utilisateur a annulé une étape du choix — on n'enregistre rien
+    }
+
     const baustelleFields = {
+      projekt_id: projektId,
       kunde_id: kundeId,
       kunde: form.kunde.trim(),
       kontakt_name: form.kontaktName.trim(),
@@ -511,6 +650,7 @@ export default function Baustellenplanung() {
 
     const savedBaustelle = {
       id: baustelleId,
+      projektId: baustelleFields.projekt_id,
       kundeId: baustelleFields.kunde_id,
       kunde: baustelleFields.kunde,
       kontaktName: baustelleFields.kontakt_name,
@@ -899,10 +1039,16 @@ export default function Baustellenplanung() {
         {page === "projekte" && (
           <ProjekteListPage
             baustellen={data.baustellen}
+            projekte={data.projekte}
             alleMitarbeiter={data.mitarbeiter}
+            alleKunden={data.kunden}
+            isAdmin={isAdmin}
             onOpenSidebar={() => setSidebarOpen(true)}
             onNew={() => openNewBaustelle()}
+            onNewProjekt={() => openNewProjekt()}
+            onEditProjekt={openEditProjekt}
             onEdit={openEditBaustelle}
+            onToggleStatus={toggleProjektStatus}
             error={error}
           />
         )}
@@ -926,6 +1072,7 @@ export default function Baustellenplanung() {
           mitarbeiterListe={isAdmin ? data.mitarbeiter : data.mitarbeiter.filter((m) => m.id === currentUserId)}
           alleMitarbeiter={data.mitarbeiter}
           alleKunden={data.kunden}
+          alleProjekte={data.projekte}
           onSelectKunde={applyKundeToForm}
           onToggleMitarbeiter={toggleFormMitarbeiter}
           onUpdateZuweisung={updateFormZuweisung}
@@ -943,6 +1090,17 @@ export default function Baustellenplanung() {
           onSave={saveKunde}
           onDelete={kundeForm.id ? deleteKunde : null}
           onClose={() => setKundeModalOpen(false)}
+        />
+      )}
+
+      {projektModalOpen && (
+        <ProjektModal
+          form={projektForm}
+          setForm={setProjektForm}
+          alleKunden={data.kunden}
+          onSave={saveProjekt}
+          onDelete={projektForm.id ? deleteProjekt : null}
+          onClose={() => setProjektModalOpen(false)}
         />
       )}
 
@@ -1424,7 +1582,7 @@ function ResourceView({ dates, mitarbeiter, baustellen, alleMitarbeiter, isAdmin
   );
 }
 
-function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, alleKunden, onSelectKunde, onToggleMitarbeiter, onUpdateZuweisung, conflicts, onSave, onDelete, onClose }) {
+function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, alleKunden, alleProjekte, onSelectKunde, onToggleMitarbeiter, onUpdateZuweisung, conflicts, onSave, onDelete, onClose }) {
   const conflictsFor = (id) => conflicts.filter((c) => c.mitarbeiterId === id);
   const [kundeSuche, setKundeSuche] = useState("");
   const [kundeDropdownOpen, setKundeDropdownOpen] = useState(false);
@@ -1446,9 +1604,31 @@ function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, alle
     <div style={overlayStyle} onClick={onClose}>
       <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-          <div style={{ fontSize: 16, fontWeight: 800 }}>{form.id ? "Baustelle bearbeiten" : "Neue Baustelle"}</div>
+          <div style={{ fontSize: 16, fontWeight: 800 }}>{form.id ? "Termin bearbeiten" : "Neuer Termin"}</div>
           <button onClick={onClose} style={{ border: "none", background: "transparent", cursor: "pointer", color: COLORS.textMuted }}><X size={18} /></button>
         </div>
+
+        <Field label="Projekt">
+          {form.id ? (
+            (() => {
+              const projekt = alleProjekte.find((p) => p.id === form.projektId);
+              return projekt ? (
+                <div style={{ fontSize: 13.5, fontWeight: 700, color: COLORS.textDark }}>
+                  {formatProjektNummer(projekt)} — {projekt.titel}
+                  {projekt.status === "abgeschlossen" && (
+                    <span style={{ marginLeft: 8, fontSize: 10.5, fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase" }}>Abgeschlossen</span>
+                  )}
+                </div>
+              ) : (
+                <div style={{ fontSize: 12.5, color: COLORS.textMuted, fontStyle: "italic" }}>Kein Projekt zugeordnet</div>
+              );
+            })()
+          ) : (
+            <div style={{ fontSize: 11.5, color: COLORS.textMuted, background: "#F6F5F2", borderRadius: 8, padding: "9px 11px" }}>
+              Wird beim Speichern automatisch bestimmt: neues Projekt, oder Zuordnung zu einem aktiven Projekt des Kunden.
+            </div>
+          )}
+        </Field>
 
         <Field label="Kunde">
           <div style={{ position: "relative" }}>
@@ -1642,7 +1822,11 @@ function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, alle
           )}
           <div style={{ flex: 1 }} />
           <button onClick={onClose} style={btnSecondary}>Abbrechen</button>
-          <button onClick={handleSave} disabled={!form.kunde.trim() || conflicts.length > 0} style={{ ...btnPrimary, opacity: form.kunde.trim() && conflicts.length === 0 ? 1 : 0.5 }}>
+          <button
+            onClick={handleSave}
+            disabled={!form.kunde.trim() || conflicts.length > 0}
+            style={{ ...btnPrimary, opacity: form.kunde.trim() && conflicts.length === 0 ? 1 : 0.5 }}
+          >
             Speichern
           </button>
         </div>
@@ -1902,18 +2086,10 @@ function PageHeader({ onOpenSidebar, title, actionLabel, onAction }) {
   );
 }
 
-function ProjekteListPage({ baustellen, alleMitarbeiter, onOpenSidebar, onNew, onEdit, error }) {
+function ProjekteListPage({ baustellen, projekte, alleMitarbeiter, alleKunden, isAdmin, onOpenSidebar, onNew, onNewProjekt, onEditProjekt, onEdit, onToggleStatus, error }) {
   const [suche, setSuche] = useState("");
   const [statusFilter, setStatusFilter] = useState("alle"); // alle | aktiv | abgeschlossen
-
-  const gefiltert = baustellen
-    .filter((b) => {
-      if (statusFilter !== "alle" && projektStatus(b) !== statusFilter) return false;
-      if (!suche.trim()) return true;
-      const q = suche.trim().toLowerCase();
-      return b.kunde.toLowerCase().includes(q) || formatAdresse(b).toLowerCase().includes(q);
-    })
-    .sort((a, b) => (a.beginn < b.beginn ? 1 : -1));
+  const [aufgeklappt, setAufgeklappt] = useState({});
 
   const namenFuer = (b) =>
     (b.zuweisungen || [])
@@ -1921,9 +2097,37 @@ function ProjekteListPage({ baustellen, alleMitarbeiter, onOpenSidebar, onNew, o
       .filter(Boolean)
       .join(", ");
 
+  const kundeName = (kundeId) => alleKunden.find((k) => k.id === kundeId)?.name || "";
+
+  // Regroupe les rendez-vous par projet ; ceux sans projet vont dans un groupe à part.
+  const gruppen = projekte.map((p) => ({
+    projekt: p,
+    termine: baustellen.filter((b) => b.projektId === p.id),
+  }));
+  const ohneProjekt = baustellen.filter((b) => !b.projektId);
+  if (ohneProjekt.length > 0) {
+    gruppen.push({ projekt: null, termine: ohneProjekt });
+  }
+
+  const gefiltert = gruppen
+    .filter(({ projekt }) => statusFilter === "alle" || (projekt ? projekt.status === statusFilter : statusFilter === "aktiv"))
+    .filter(({ projekt, termine }) => {
+      if (!suche.trim()) return true;
+      const q = suche.trim().toLowerCase();
+      const titel = projekt ? `${formatProjektNummer(projekt)} ${projekt.titel} ${kundeName(projekt.kundeId)}`.toLowerCase() : "ohne projekt";
+      return titel.includes(q) || termine.some((b) => b.kunde.toLowerCase().includes(q) || formatAdresse(b).toLowerCase().includes(q));
+    })
+    .sort((a, b) => {
+      if (!a.projekt) return 1;
+      if (!b.projekt) return -1;
+      return b.projekt.nummer - a.projekt.nummer;
+    });
+
+  const toggle = (key) => setAufgeklappt((a) => ({ ...a, [key]: !a[key] }));
+
   return (
     <>
-      <PageHeader onOpenSidebar={onOpenSidebar} title="Projekte" actionLabel="Neue Baustelle" onAction={onNew} />
+      <PageHeader onOpenSidebar={onOpenSidebar} title="Projekte" actionLabel={isAdmin ? "Neues Projekt" : undefined} onAction={isAdmin ? onNewProjekt : undefined} />
       {error && <div style={{ background: "#FDECEA", color: "#B42318", fontSize: 12.5, padding: "8px 22px" }}>{error}</div>}
 
       <div style={{ padding: "16px 22px 0", display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -1931,7 +2135,7 @@ function ProjekteListPage({ baustellen, alleMitarbeiter, onOpenSidebar, onNew, o
           <Search size={14} style={{ position: "absolute", left: 11, top: 12, color: COLORS.textMuted }} />
           <input
             style={{ ...inputStyle, paddingLeft: 32 }} value={suche}
-            onChange={(e) => setSuche(e.target.value)} placeholder="Kunde oder Adresse suchen…"
+            onChange={(e) => setSuche(e.target.value)} placeholder="Projekt, Kunde oder Adresse suchen…"
           />
         </div>
         <div style={{ display: "flex", background: COLORS.bgMain, borderRadius: 8, padding: 3, gap: 2 }}>
@@ -1959,40 +2163,93 @@ function ProjekteListPage({ baustellen, alleMitarbeiter, onOpenSidebar, onNew, o
             Keine Projekte gefunden.
           </div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {gefiltert.map((b) => {
-              const status = projektStatus(b);
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {gefiltert.map(({ projekt, termine }) => {
+              const key = projekt ? projekt.id : "ohne-projekt";
+              const offen = aufgeklappt[key] !== false; // ouvert par défaut
+              const status = projekt ? projekt.status : "aktiv";
               return (
-                <div
-                  key={b.id}
-                  onClick={() => onEdit(b)}
-                  style={{
-                    background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 10,
-                    padding: "12px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap",
-                  }}
-                >
-                  <div style={{ flex: 1, minWidth: 180 }}>
-                    <div style={{ fontWeight: 700, fontSize: 14, color: COLORS.textDark }}>{b.kunde}</div>
-                    {formatAdresse(b) && (
-                      <div style={{ fontSize: 12, color: COLORS.textMuted, display: "flex", alignItems: "center", gap: 4, marginTop: 2 }}>
-                        <MapPin size={11} /> {formatAdresse(b)}
+                <div key={key} style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "hidden" }}>
+                  <div
+                    onClick={() => toggle(key)}
+                    style={{ padding: "12px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", background: "#FAFAF9" }}
+                  >
+                    <div style={{ color: COLORS.textMuted, flexShrink: 0 }}>{offen ? "▾" : "▸"}</div>
+                    <div style={{ flex: 1, minWidth: 180 }}>
+                      <div style={{ fontWeight: 800, fontSize: 14.5, color: COLORS.textDark }}>
+                        {projekt ? `${formatProjektNummer(projekt)} — ${projekt.titel}` : "Ohne Projekt"}
                       </div>
+                      {projekt && kundeName(projekt.kundeId) && (
+                        <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 2 }}>{kundeName(projekt.kundeId)}</div>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>{termine.length} Termin{termine.length !== 1 ? "e" : ""}</div>
+                    <div style={{
+                      fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 20, textTransform: "uppercase",
+                      background: status === "aktiv" ? "#EAF6EF" : "#F1F0EC",
+                      color: status === "aktiv" ? COLORS.brandGreen : COLORS.textMuted,
+                    }}>
+                      {status === "aktiv" ? "Aktiv" : "Abgeschlossen"}
+                    </div>
+                    {projekt && isAdmin && (
+                      <>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onEditProjekt(projekt); }}
+                          style={{ ...btnSecondary, padding: "5px 10px", fontSize: 11.5 }}
+                        >
+                          Bearbeiten
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onToggleStatus(projekt.id, status === "aktiv" ? "abgeschlossen" : "aktiv"); }}
+                          style={{
+                            ...btnSecondary, padding: "5px 10px", fontSize: 11.5,
+                            color: status === "aktiv" ? "#B45309" : COLORS.brandGreen,
+                          }}
+                        >
+                          {status === "aktiv" ? "Abschließen" : "Wieder öffnen"}
+                        </button>
+                      </>
                     )}
                   </div>
-                  <div style={{ fontSize: 12.5, color: COLORS.textMuted, minWidth: 140 }}>
-                    {b.beginn} → {b.ende}
-                    {formatZeitraum(b) && <div style={{ fontSize: 11 }}>{formatZeitraum(b)}</div>}
-                  </div>
-                  <div style={{ fontSize: 12, color: COLORS.textMuted, minWidth: 140 }}>
-                    {namenFuer(b) || <span style={{ fontStyle: "italic" }}>Nicht zugewiesen</span>}
-                  </div>
-                  <div style={{
-                    fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 20, textTransform: "uppercase",
-                    background: status === "aktiv" ? "#EAF6EF" : "#F1F0EC",
-                    color: status === "aktiv" ? COLORS.brandGreen : COLORS.textMuted,
-                  }}>
-                    {status === "aktiv" ? "Aktiv" : "Abgeschlossen"}
-                  </div>
+
+                  {offen && (
+                    <div style={{ borderTop: `1px solid ${COLORS.borderSoft}` }}>
+                      {termine.length === 0 ? (
+                        <div style={{ padding: "12px 16px", fontSize: 12.5, color: COLORS.textMuted, fontStyle: "italic" }}>
+                          Noch keine Termine für dieses Projekt.
+                        </div>
+                      ) : (
+                        termine
+                          .sort((a, b) => (a.beginn < b.beginn ? 1 : -1))
+                          .map((b) => (
+                            <div
+                              key={b.id}
+                              onClick={() => onEdit(b)}
+                              style={{
+                                padding: "10px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap",
+                                borderTop: `1px solid ${COLORS.borderSoft}`,
+                              }}
+                            >
+                              <div style={{ flex: 1, minWidth: 160 }}>
+                                <div style={{ fontWeight: 600, fontSize: 13, color: COLORS.textDark }}>{b.kunde}</div>
+                                {formatAdresse(b) && (
+                                  <div style={{ fontSize: 11.5, color: COLORS.textMuted, display: "flex", alignItems: "center", gap: 4, marginTop: 2 }}>
+                                    <MapPin size={10} /> {formatAdresse(b)}
+                                  </div>
+                                )}
+                              </div>
+                              <div style={{ fontSize: 12, color: COLORS.textMuted, minWidth: 130 }}>
+                                {b.beginn} → {b.ende}
+                                {formatZeitraum(b) && <div style={{ fontSize: 10.5 }}>{formatZeitraum(b)}</div>}
+                              </div>
+                              <div style={{ fontSize: 11.5, color: COLORS.textMuted, minWidth: 120 }}>
+                                {namenFuer(b) || <span style={{ fontStyle: "italic" }}>Nicht zugewiesen</span>}
+                              </div>
+                            </div>
+                          ))
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -2134,6 +2391,94 @@ function KundeModal({ form, setForm, onSave, onDelete, onClose }) {
           <div style={{ flex: 1 }} />
           <button onClick={onClose} style={btnSecondary}>Abbrechen</button>
           <button onClick={onSave} disabled={!form.name.trim()} style={{ ...btnPrimary, opacity: form.name.trim() ? 1 : 0.5 }}>
+            Speichern
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProjektModal({ form, setForm, alleKunden, onSave, onDelete, onClose }) {
+  const [kundeDropdownOpen, setKundeDropdownOpen] = useState(false);
+  const kundeMatches = form.kundeNameEingabe.trim()
+    ? alleKunden.filter((k) => k.name.toLowerCase().includes(form.kundeNameEingabe.trim().toLowerCase()))
+    : alleKunden;
+
+  const kannSpeichern = form.titel.trim() && form.kundeNameEingabe.trim();
+
+  return (
+    <div style={overlayStyle} onClick={onClose}>
+      <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <div style={{ fontSize: 16, fontWeight: 800 }}>{form.id ? "Projekt bearbeiten" : "Neues Projekt"}</div>
+          <button onClick={onClose} style={{ border: "none", background: "transparent", cursor: "pointer", color: COLORS.textMuted }}><X size={18} /></button>
+        </div>
+
+        <Field label="Titel">
+          <input style={inputStyle} value={form.titel} onChange={(e) => setForm({ ...form, titel: e.target.value })} placeholder="z. B. Umbau Erdgeschoss" autoFocus />
+        </Field>
+
+        <Field label="Kunde">
+          <div style={{ position: "relative" }}>
+            <input
+              style={inputStyle} value={form.kundeNameEingabe}
+              onChange={(e) => {
+                setForm({ ...form, kundeNameEingabe: e.target.value, kundeId: null });
+                setKundeDropdownOpen(true);
+              }}
+              onFocus={() => setKundeDropdownOpen(true)}
+              onBlur={() => setTimeout(() => setKundeDropdownOpen(false), 150)}
+              placeholder="Kunde suchen oder neu eingeben"
+            />
+            {form.kundeId && (
+              <div style={{ fontSize: 10.5, color: COLORS.brandGreen, fontWeight: 700, marginTop: 4 }}>
+                ✓ Bestehender Kunde verknüpft
+              </div>
+            )}
+            {!form.kundeId && form.kundeNameEingabe.trim() && (
+              <div style={{ fontSize: 10.5, color: COLORS.textMuted, marginTop: 4 }}>
+                Neuer Kunde — wird beim Speichern in der Kundenliste angelegt.
+              </div>
+            )}
+            {kundeDropdownOpen && kundeMatches.length > 0 && (
+              <div style={{
+                position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 61,
+                background: "#fff", borderRadius: 10, border: `1px solid ${COLORS.border}`,
+                boxShadow: "0 8px 24px rgba(0,0,0,0.14)", padding: 6, maxHeight: 180, overflowY: "auto",
+              }}>
+                {kundeMatches.map((k) => (
+                  <button
+                    key={k.id}
+                    onMouseDown={() => { setForm({ ...form, kundeId: k.id, kundeNameEingabe: k.name }); setKundeDropdownOpen(false); }}
+                    style={{
+                      display: "block", width: "100%", textAlign: "left", padding: "8px 10px", borderRadius: 7,
+                      border: "none", background: "transparent", cursor: "pointer", fontSize: 13, color: COLORS.textDark,
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "#F6F5F2")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                  >
+                    {k.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </Field>
+
+        <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: -6, marginBottom: 14 }}>
+          Die Projektnummer wird automatisch vergeben. Der Status (Aktiv/Abgeschlossen) wird auf der Projekte-Seite von einem Admin gesteuert — Termine schließen das Projekt nicht automatisch ab.
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
+          {onDelete && (
+            <button onClick={onDelete} style={{ ...btnSecondary, color: "#B42318", borderColor: "#F3D6D2", display: "flex", alignItems: "center", gap: 6 }}>
+              <Trash2 size={14} /> Löschen
+            </button>
+          )}
+          <div style={{ flex: 1 }} />
+          <button onClick={onClose} style={btnSecondary}>Abbrechen</button>
+          <button onClick={onSave} disabled={!kannSpeichern} style={{ ...btnPrimary, opacity: kannSpeichern ? 1 : 0.5 }}>
             Speichern
           </button>
         </div>
