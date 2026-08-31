@@ -1247,20 +1247,26 @@ function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, onDayCli
               key={i}
               onClick={() => onDayClick(date)}
               style={{
-                minHeight: 96, borderRight: (i + 1) % 7 !== 0 ? `1px solid ${COLORS.borderSoft}` : "none",
-                borderBottom: `1px solid ${COLORS.borderSoft}`, padding: 6, cursor: "pointer",
-                background: dimmed ? "#FAFAF9" : COLORS.card,
+                minHeight: 96, minWidth: 0,
+                borderRight: (i + 1) % 7 !== 0 ? `1.5px solid ${COLORS.border}` : "none",
+                borderBottom: `1.5px solid ${COLORS.border}`, cursor: "pointer",
+                background: dimmed ? "#FAFAF9" : COLORS.card, display: "flex", flexDirection: "column",
               }}
             >
               <div style={{
-                fontSize: 12, fontWeight: isToday ? 800 : 600, color: dimmed ? COLORS.textMuted : COLORS.textDark,
-                width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center",
-                borderRadius: "50%", background: isToday ? COLORS.accent : "transparent",
-                ...(isToday ? { color: "#fff" } : {}),
+                padding: "5px 7px", borderBottom: `1px solid ${COLORS.borderSoft}`,
+                display: "flex", alignItems: "center", background: isToday ? "#FFF3EA" : "transparent",
               }}>
-                {date.getDate()}
+                <span style={{
+                  fontSize: 12, fontWeight: isToday ? 800 : 700, color: dimmed ? COLORS.textMuted : COLORS.textDark,
+                  width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center",
+                  borderRadius: "50%", background: isToday ? COLORS.accent : "transparent",
+                  ...(isToday ? { color: "#fff" } : {}),
+                }}>
+                  {date.getDate()}
+                </span>
               </div>
-              <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 2 }}>
+              <div style={{ padding: 6, display: "flex", flexDirection: "column", gap: 2, minWidth: 0, flex: 1 }}>
                 {items.slice(0, 3).map((b) => {
                   const aktiveMitarbeiter = (b.zuweisungen || [])
                     .filter((z) => isZuweisungAktivAm(z, date))
@@ -1272,7 +1278,7 @@ function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, onDayCli
                       onClick={(e) => { e.stopPropagation(); onBaustelleClick(b); }}
                       style={{
                         fontSize: 10.5, padding: "2px 5px", borderRadius: 4, color: COLORS.textDark, fontWeight: 600,
-                        display: "flex", alignItems: "center", gap: 4, overflow: "hidden",
+                        display: "flex", alignItems: "center", gap: 4, overflow: "hidden", minWidth: 0,
                         background: "#F0EFEA",
                       }}
                       title={aktiveMitarbeiter.length ? `${b.kunde} — ${aktiveMitarbeiter.map((m) => m.name).join(", ")}` : b.kunde}
@@ -1286,7 +1292,7 @@ function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, onDayCli
                           <span style={{ width: 6, height: 6, borderRadius: "50%", background: COLORS.textMuted, flexShrink: 0 }} />
                         )}
                       </span>
-                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.kunde}</span>
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{b.kunde}</span>
                     </div>
                   );
                 })}
