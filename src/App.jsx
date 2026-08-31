@@ -1257,7 +1257,7 @@ function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, onDayCli
               onClick={() => onDayClick(date)}
               style={{
                 minHeight: 96, minWidth: 0,
-                borderRight: (i + 1) % 7 !== 0 ? `1.5px solid ${COLORS.border}` : "none",
+                borderRight: (i + 1) % 7 !== 0 ? `1px solid ${COLORS.border}` : "none",
                 borderBottom: `1.5px solid ${COLORS.border}`, cursor: "pointer",
                 background: dimmed ? "#FAFAF9" : istWochenende ? hexToRgba(COLORS.accent, 0.035) : COLORS.card,
                 display: "flex", flexDirection: "column",
