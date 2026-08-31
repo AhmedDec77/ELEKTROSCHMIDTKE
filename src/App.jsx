@@ -1258,7 +1258,7 @@ function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, onDayCli
               onClick={() => onDayClick(date)}
               style={{
                 minHeight: 96, minWidth: 0, cursor: "pointer",
-                background: dimmed ? "#FAFAF9" : istWochenende ? "#FAF1F2" : COLORS.card,
+                background: dimmed ? "#FAFAF9" : istWochenende ? "#FDF9F9" : COLORS.card,
                 display: "flex", flexDirection: "column",
               }}
             >
