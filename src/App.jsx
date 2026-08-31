@@ -1230,7 +1230,7 @@ function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, onDayCli
   const today = new Date();
   return (
     <div style={{ background: COLORS.card, borderRadius: 12, border: `1px solid ${COLORS.border}`, overflow: "hidden" }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", borderBottom: `1px solid ${COLORS.border}` }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", borderBottom: `1px solid rgba(28,33,38,0.16)` }}>
         {DAY_LABELS.map((d, idx) => {
           const istWochenende = idx === 5 || idx === 6; // Sa, So
           return (
@@ -1244,7 +1244,7 @@ function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, onDayCli
           );
         })}
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: "1px", background: "rgba(28,33,38,0.16)" }}>
         {grid.map((date, i) => {
           const items = baustellenFor(date);
           const dimmed = date.getMonth() !== currentMonth;
@@ -1256,9 +1256,7 @@ function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, onDayCli
               key={i}
               onClick={() => onDayClick(date)}
               style={{
-                minHeight: 96, minWidth: 0,
-                borderRight: (i + 1) % 7 !== 0 ? `1px solid ${COLORS.border}` : "none",
-                borderBottom: `1.5px solid ${COLORS.border}`, cursor: "pointer",
+                minHeight: 96, minWidth: 0, cursor: "pointer",
                 background: dimmed ? "#FAFAF9" : istWochenende ? hexToRgba(COLORS.accent, 0.035) : COLORS.card,
                 display: "flex", flexDirection: "column",
               }}
