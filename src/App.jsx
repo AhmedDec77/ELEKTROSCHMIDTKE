@@ -1231,17 +1231,26 @@ function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, onDayCli
   return (
     <div style={{ background: COLORS.card, borderRadius: 12, border: `1px solid ${COLORS.border}`, overflow: "hidden" }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", borderBottom: `1px solid ${COLORS.border}` }}>
-        {DAY_LABELS.map((d) => (
-          <div key={d} style={{ padding: "9px 0", textAlign: "center", fontSize: 11, fontWeight: 700, color: COLORS.textMuted, letterSpacing: "0.06em", textTransform: "uppercase" }}>
-            {d}
-          </div>
-        ))}
+        {DAY_LABELS.map((d, idx) => {
+          const istWochenende = idx === 5 || idx === 6; // Sa, So
+          return (
+            <div key={d} style={{
+              padding: "9px 0", textAlign: "center", fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase",
+              color: istWochenende ? COLORS.accentDark : COLORS.textMuted,
+              background: istWochenende ? hexToRgba(COLORS.accent, 0.08) : "transparent",
+            }}>
+              {d}
+            </div>
+          );
+        })}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)" }}>
         {grid.map((date, i) => {
           const items = baustellenFor(date);
           const dimmed = date.getMonth() !== currentMonth;
           const isToday = isSameDay(date, today);
+          const spalte = i % 7;
+          const istWochenende = spalte === 5 || spalte === 6; // Sa, So
           return (
             <div
               key={i}
@@ -1250,7 +1259,8 @@ function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, onDayCli
                 minHeight: 96, minWidth: 0,
                 borderRight: (i + 1) % 7 !== 0 ? `1.5px solid ${COLORS.border}` : "none",
                 borderBottom: `1.5px solid ${COLORS.border}`, cursor: "pointer",
-                background: dimmed ? "#FAFAF9" : COLORS.card, display: "flex", flexDirection: "column",
+                background: dimmed ? "#FAFAF9" : istWochenende ? hexToRgba(COLORS.accent, 0.035) : COLORS.card,
+                display: "flex", flexDirection: "column",
               }}
             >
               <div style={{
@@ -1330,12 +1340,13 @@ function ResourceView({ dates, mitarbeiter, baustellen, alleMitarbeiter, isAdmin
         <div style={{ padding: "10px 14px", fontSize: 11, fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.06em" }}>Team</div>
         {dates.map((d, i) => {
           const isToday = isSameDay(d, today);
+          const istWochenende = d.getDay() === 0 || d.getDay() === 6;
           return (
             <div key={i} style={{
               padding: "10px 8px", textAlign: "center", borderLeft: `1px solid ${COLORS.borderSoft}`,
-              background: isToday ? "#FFF3EA" : "transparent", minWidth: 0,
+              background: isToday ? "#FFF3EA" : istWochenende ? hexToRgba(COLORS.accent, 0.045) : "transparent", minWidth: 0,
             }}>
-              <div style={{ fontSize: 10.5, fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase" }}>
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: istWochenende && !isToday ? COLORS.accentDark : COLORS.textMuted, textTransform: "uppercase" }}>
                 {d.toLocaleDateString("de-DE", { weekday: "short" })}
               </div>
               <div style={{ fontSize: 14, fontWeight: 800, color: isToday ? COLORS.accentDark : COLORS.textDark }}>
@@ -1356,11 +1367,16 @@ function ResourceView({ dates, mitarbeiter, baustellen, alleMitarbeiter, isAdmin
           </div>
           {dates.map((d, i) => {
             const items = person.id === "__none" ? [] : rowFor(person, d);
+            const istWochenende = d.getDay() === 0 || d.getDay() === 6;
             return (
               <div
                 key={i}
                 onClick={() => onCellClick(d)}
-                style={{ borderLeft: `1px solid ${COLORS.borderSoft}`, padding: 5, minHeight: 60, minWidth: 0, cursor: "pointer", display: "flex", flexDirection: "column", gap: 3 }}
+                style={{
+                  borderLeft: `1px solid ${COLORS.borderSoft}`, padding: 5, minHeight: 60, minWidth: 0, cursor: "pointer",
+                  display: "flex", flexDirection: "column", gap: 3,
+                  background: istWochenende ? hexToRgba(COLORS.accent, 0.03) : "transparent",
+                }}
               >
                 {items.map((b) => {
                   const rowColor = person.farbe || COLORS.textMuted;
