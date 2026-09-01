@@ -1798,6 +1798,19 @@ function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, alle
                         ⚠ Bereits eingeplant bei {myConflicts.map((c) => `${c.kunde} (${c.beginn} – ${c.ende})`).join(", ")}
                       </div>
                     )}
+                    {(z.beginn > form.beginn || z.ende < form.ende) && (
+                      <div style={{ marginTop: 6 }}>
+                        <div style={{ fontSize: 11.5, color: "#B45309", fontWeight: 600, marginBottom: 4 }}>
+                          ⚠ Deckt nicht den ganzen Termin ab ({form.beginn} – {form.ende}) — an den übrigen Tagen erscheint {person?.name || "diese Person"} nicht im Kalender.
+                        </div>
+                        <button
+                          onClick={() => { onUpdateZuweisung(z.mitarbeiterId, "beginn", form.beginn); onUpdateZuweisung(z.mitarbeiterId, "ende", form.ende); }}
+                          style={{ border: "none", background: "none", color: "#B45309", fontWeight: 700, fontSize: 11, textDecoration: "underline", cursor: "pointer", padding: 0 }}
+                        >
+                          Auf ganzen Termin ausdehnen
+                        </button>
+                      </div>
+                    )}
                   </div>
                 );
               })}
