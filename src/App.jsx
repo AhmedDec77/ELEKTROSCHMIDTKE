@@ -231,12 +231,27 @@ function stundenGebuchtFuerPeriode(mitarbeiterId, periodeBeginn, periodeEnde, ba
   const relevante = baustellen.filter((b) => (b.zuweisungen || []).some((z) => z.mitarbeiterId === mitarbeiterId));
   for (const tag of alleTageZwischen(periodeBeginn, periodeEnde)) {
     if (!wochenendeEinschliessen && istWochenendtag(tag)) continue;
-    for (const b of relevante) {
+    const aktive = relevante.filter((b) => {
       const z = (b.zuweisungen || []).find((zz) => zz.mitarbeiterId === mitarbeiterId);
-      if (z && isZuweisungAktivAm(z, new Date(tag + "T00:00:00"))) {
-        summe += stundenProTag(b);
-      }
+      return z && isZuweisungAktivAm(z, new Date(tag + "T00:00:00"));
+    });
+    if (aktive.length === 0) continue;
+    const mitZeiten = aktive.filter((b) => b.startzeit && b.endzeit);
+    const ohneZeiten = aktive.filter((b) => !(b.startzeit && b.endzeit));
+    let tagesSumme = 0;
+    if (mitZeiten.length > 0) {
+      // Heures précisées : brutes, la pause déjeuner (1h) n'est pas payée
+      // et se déduit une seule fois par jour, pas par chantier.
+      const rohTotal = mitZeiten.reduce((s, b) => s + stundenProTag(b), 0);
+      tagesSumme += Math.max(0, rohTotal - Math.min(1, rohTotal));
     }
+    if (ohneZeiten.length > 0) {
+      // Sans heure précisée : on suppose une journée standard déjà NETTE
+      // (stundenProTag renvoie déjà la pause exclue) — comptée une seule
+      // fois pour le jour, peu importe le nombre de chantiers concernés.
+      tagesSumme += STANDARD_TAGESKAPAZITAET;
+    }
+    summe += tagesSumme;
   }
   return summe;
 }
@@ -3086,18 +3101,35 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, isAdmin, 
     let n = 0;
     for (const ds of alleTageZwischen(monatBeginn, monatEnde)) {
       const roh = eintraegeFuerTag(mitarbeiterId, ds, baustellen);
+      if (roh.length === 0) continue;
       const mitZeiten = roh.filter((e) => e.startzeit && e.endzeit);
-      roh.forEach((e) => {
-        let stunden;
-        if (e.startzeit && e.endzeit) {
+      if (mitZeiten.length === 0) {
+        // Aucune heure précisée sur aucune tâche du jour : on suppose une
+        // journée standard déjà NETTE (pause déjà exclue), répartie entre
+        // les tâches — pas de déduction supplémentaire ici.
+        const proTache = Math.round((STANDARD_TAGESKAPAZITAET / roh.length) * 4) / 4;
+        roh.forEach((e) => neu.push({ id: `auto-${n++}`, datum: ds, kunde: e.kunde, leistung: e.leistung, stunden: proTache }));
+      } else {
+        // Au moins une tâche a des heures précises : la pause déjeuner (1h)
+        // n'est pas payée — déduite une seule fois du total brut du jour,
+        // répartie proportionnellement entre les tâches concernées.
+        const rohParTache = mitZeiten.map((e) => {
           const [sh, sm] = e.startzeit.split(":").map(Number);
           const [eh, em] = e.endzeit.split(":").map(Number);
-          stunden = Math.max(0, eh + em / 60 - (sh + sm / 60));
-        } else {
-          stunden = mitZeiten.length > 0 ? 0 : Math.round((STANDARD_TAGESKAPAZITAET / roh.length) * 4) / 4;
-        }
-        neu.push({ id: `auto-${n++}`, datum: ds, kunde: e.kunde, leistung: e.leistung, stunden: Math.round(stunden * 4) / 4 });
-      });
+          return Math.max(0, eh + em / 60 - (sh + sm / 60));
+        });
+        const rohTotal = rohParTache.reduce((s, h) => s + h, 0);
+        const pauseAbzug = Math.min(1, rohTotal);
+        mitZeiten.forEach((e, i) => {
+          const anteil = rohTotal > 0 ? rohParTache[i] / rohTotal : 0;
+          const stunden = Math.max(0, rohParTache[i] - pauseAbzug * anteil);
+          neu.push({ id: `auto-${n++}`, datum: ds, kunde: e.kunde, leistung: e.leistung, stunden: Math.round(stunden * 4) / 4 });
+        });
+        // Tâches du même jour sans heure précisée : durée inconnue, laissée à 0 (comme avant).
+        roh.filter((e) => !(e.startzeit && e.endzeit)).forEach((e) => {
+          neu.push({ id: `auto-${n++}`, datum: ds, kunde: e.kunde, leistung: e.leistung, stunden: 0 });
+        });
+      }
     }
     setEintraege(neu);
     setAufzeichnungsDaten({});
