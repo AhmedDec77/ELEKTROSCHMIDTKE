@@ -2215,11 +2215,12 @@ function ProjekteListPage({ baustellen, projekte, alleMitarbeiter, alleKunden, i
                         <button
                           onClick={(e) => { e.stopPropagation(); onToggleStatus(projekt.id, status === "aktiv" ? "abgeschlossen" : "aktiv"); }}
                           style={{
-                            ...btnSecondary, padding: "5px 10px", fontSize: 11.5,
-                            color: status === "aktiv" ? "#B45309" : COLORS.brandGreen,
+                            border: "none", borderRadius: 7, padding: "6px 12px", fontSize: 11.5, fontWeight: 700, cursor: "pointer",
+                            color: "#fff",
+                            background: status === "aktiv" ? "#B45309" : COLORS.brandGreen,
                           }}
                         >
-                          {status === "aktiv" ? "Abschließen" : "Wieder öffnen"}
+                          {status === "aktiv" ? "Projekt abschließen" : "Wieder öffnen"}
                         </button>
                       </>
                     )}
