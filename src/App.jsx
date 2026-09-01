@@ -109,6 +109,76 @@ function enthaeltWochenende(beginn, ende) {
   }
   return false;
 }
+const STANDARD_TAGESKAPAZITAET = 8; // heures par jour, hypothèse standard sans autre indication
+
+// Nombre d'heures que représente un Termin pour UNE journée : basé sur
+// l'heure de début/fin si précisée, sinon on suppose une journée pleine.
+function stundenProTag(baustelle) {
+  if (baustelle.startzeit && baustelle.endzeit) {
+    const [sh, sm] = baustelle.startzeit.split(":").map(Number);
+    const [eh, em] = baustelle.endzeit.split(":").map(Number);
+    let h = eh + em / 60 - (sh + sm / 60);
+    if (h <= 0) h += 24;
+    return Math.round(h * 4) / 4; // arrondi au quart d'heure
+  }
+  return STANDARD_TAGESKAPAZITAET;
+}
+function alleTageZwischen(beginn, ende) {
+  const tage = [];
+  let cur = beginn;
+  let sicherheit = 0;
+  while (cur <= ende && sicherheit < 1000) {
+    tage.push(cur);
+    const [y, m, d] = cur.split("-").map(Number);
+    cur = fmt(new Date(y, m - 1, d + 1));
+    sicherheit++;
+  }
+  return tage;
+}
+// Bornes [beginn, ende] pour une période "Tag" / "Woche" / "Monat" ancrée sur une date.
+function periodenGrenzen(zeitraum, datum) {
+  if (zeitraum === "tag") {
+    const ds = fmt(datum);
+    return { beginn: ds, ende: ds };
+  }
+  if (zeitraum === "woche") {
+    const start = startOfWeek(datum);
+    return { beginn: fmt(start), ende: fmt(addDays(start, 6)) };
+  }
+  const start = new Date(datum.getFullYear(), datum.getMonth(), 1);
+  const ende = new Date(datum.getFullYear(), datum.getMonth() + 1, 0);
+  return { beginn: fmt(start), ende: fmt(ende) };
+}
+// Heures déjà réservées pour un employé sur une période donnée, en sommant
+// chaque jour où son affectation est active.
+function stundenGebuchtFuerPeriode(mitarbeiterId, periodeBeginn, periodeEnde, baustellen) {
+  let summe = 0;
+  const relevante = baustellen.filter((b) => (b.zuweisungen || []).some((z) => z.mitarbeiterId === mitarbeiterId));
+  for (const tag of alleTageZwischen(periodeBeginn, periodeEnde)) {
+    for (const b of relevante) {
+      const z = (b.zuweisungen || []).find((zz) => zz.mitarbeiterId === mitarbeiterId);
+      if (z && isZuweisungAktivAm(z, new Date(tag + "T00:00:00"))) {
+        summe += stundenProTag(b);
+      }
+    }
+  }
+  return summe;
+}
+// Vérifie si un employé est libre sur [von, bis] (dates) et, si précisé,
+// sur le créneau horaire [uhrzeitVon, uhrzeitBis]. Retourne les conflits trouvés.
+function findeKonflikteFuerVerfuegbarkeit(mitarbeiterId, von, bis, uhrzeitVon, uhrzeitBis, baustellen) {
+  const konflikte = [];
+  for (const b of baustellen) {
+    const z = (b.zuweisungen || []).find((zz) => zz.mitarbeiterId === mitarbeiterId);
+    if (!z) continue;
+    if (!rangesOverlap(z.beginn, z.ende, von, bis)) continue;
+    if (uhrzeitVon && uhrzeitBis && b.startzeit && b.endzeit) {
+      if (!zeitenUeberlappen(uhrzeitVon, uhrzeitBis, b.startzeit, b.endzeit)) continue;
+    }
+    konflikte.push(b);
+  }
+  return konflikte;
+}
 // Compatibilité avec les anciennes données (mitarbeiterIds sans dates propres)
 function normalizeBaustelle(b) {
   if (b.zuweisungen) return b;
@@ -838,6 +908,7 @@ export default function Baustellenplanung() {
             ["kalender", CalendarIcon, "Kalender"],
             ["projekte", ClipboardList, "Projekte"],
             ["kunden", Building2, "Kunden"],
+            ["ressourcen", Users, "Ressourcen"],
           ].map(([key, Icon, label]) => (
             <button
               key={key}
@@ -1068,6 +1139,16 @@ export default function Baustellenplanung() {
             onOpenSidebar={() => setSidebarOpen(true)}
             onNew={openNewKunde}
             onEdit={openEditKunde}
+            error={error}
+          />
+        )}
+
+        {page === "ressourcen" && (
+          <RessourcenPage
+            baustellen={data.baustellen}
+            mitarbeiter={data.mitarbeiter}
+            onOpenSidebar={() => setSidebarOpen(true)}
+            onBaustelleClick={openEditBaustelle}
             error={error}
           />
         )}
@@ -2438,6 +2519,217 @@ function KundenListPage({ kunden, baustellen, onOpenSidebar, onNew, onEdit, erro
         )}
       </div>
     </>
+  );
+}
+
+function RessourcenPage({ baustellen, mitarbeiter, onOpenSidebar, onBaustelleClick, error }) {
+  const [modus, setModus] = useState("verfuegbarkeit"); // verfuegbarkeit | stunden
+
+  return (
+    <>
+      <PageHeader onOpenSidebar={onOpenSidebar} title="Ressourcen" />
+      {error && <div style={{ background: "#FDECEA", color: "#B42318", fontSize: 12.5, padding: "8px 22px" }}>{error}</div>}
+
+      <div style={{ padding: "16px 22px 0" }}>
+        <div style={{ display: "flex", background: COLORS.bgMain, borderRadius: 8, padding: 3, gap: 2, width: "fit-content" }}>
+          {[["verfuegbarkeit", "Verfügbarkeit prüfen"], ["stunden", "Stunden-Übersicht"]].map(([v, label]) => (
+            <button
+              key={v}
+              onClick={() => setModus(v)}
+              style={{
+                padding: "8px 15px", borderRadius: 6, border: "none", cursor: "pointer",
+                fontSize: 12.5, fontWeight: 700,
+                background: modus === v ? COLORS.card : "transparent",
+                color: modus === v ? COLORS.textDark : COLORS.textMuted,
+                boxShadow: modus === v ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ flex: 1, overflow: "auto", padding: 20 }}>
+        {modus === "verfuegbarkeit" ? (
+          <VerfuegbarkeitPruefen baustellen={baustellen} mitarbeiter={mitarbeiter} onBaustelleClick={onBaustelleClick} />
+        ) : (
+          <StundenUebersicht baustellen={baustellen} mitarbeiter={mitarbeiter} />
+        )}
+      </div>
+    </>
+  );
+}
+
+function VerfuegbarkeitPruefen({ baustellen, mitarbeiter, onBaustelleClick }) {
+  const heute = fmt(new Date());
+  const [von, setVon] = useState(heute);
+  const [bis, setBis] = useState(heute);
+  const [uhrzeitVon, setUhrzeitVon] = useState("");
+  const [uhrzeitBis, setUhrzeitBis] = useState("");
+  const [geprueft, setGeprueft] = useState(false);
+
+  const ergebnisse = mitarbeiter.map((m) => {
+    const konflikte = findeKonflikteFuerVerfuegbarkeit(m.id, von, bis, uhrzeitVon, uhrzeitBis, baustellen);
+    return { mitarbeiter: m, frei: konflikte.length === 0, konflikte };
+  });
+  const freie = ergebnisse.filter((e) => e.frei);
+  const besetzte = ergebnisse.filter((e) => !e.frei);
+
+  return (
+    <div>
+      <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 16, marginBottom: 16, maxWidth: 560 }}>
+        <div style={{ display: "flex", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+          <Field label="Von (Datum)" style={{ flex: 1, minWidth: 140 }}>
+            <input type="date" style={inputStyle} value={von} onChange={(e) => { setVon(e.target.value); if (e.target.value > bis) setBis(e.target.value); setGeprueft(false); }} />
+          </Field>
+          <Field label="Bis (Datum)" style={{ flex: 1, minWidth: 140 }}>
+            <input type="date" style={inputStyle} value={bis} min={von} onChange={(e) => { setBis(e.target.value); setGeprueft(false); }} />
+          </Field>
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Field label="Uhrzeit von (optional)" style={{ flex: 1 }}>
+            <input type="time" style={inputStyle} value={uhrzeitVon} onChange={(e) => { setUhrzeitVon(e.target.value); setGeprueft(false); }} />
+          </Field>
+          <Field label="Uhrzeit bis (optional)" style={{ flex: 1 }}>
+            <input type="time" style={inputStyle} value={uhrzeitBis} onChange={(e) => { setUhrzeitBis(e.target.value); setGeprueft(false); }} />
+          </Field>
+        </div>
+        <button onClick={() => setGeprueft(true)} style={{ ...btnPrimary, width: "100%", marginTop: 4 }}>
+          Verfügbarkeit prüfen
+        </button>
+      </div>
+
+      {geprueft && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 18, maxWidth: 560 }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.brandGreen, textTransform: "uppercase", marginBottom: 8 }}>
+              ✓ Verfügbar ({freie.length})
+            </div>
+            {freie.length === 0 ? (
+              <div style={{ fontSize: 12.5, color: COLORS.textMuted, fontStyle: "italic" }}>Niemand verfügbar in diesem Zeitraum.</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {freie.map(({ mitarbeiter: m }) => (
+                  <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "#EAF6EF", borderRadius: 8 }}>
+                    <span style={{ width: 9, height: 9, borderRadius: "50%", background: m.farbe }} />
+                    <span style={{ fontSize: 13, fontWeight: 600 }}>{m.name}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#B45309", textTransform: "uppercase", marginBottom: 8 }}>
+              Nicht verfügbar ({besetzte.length})
+            </div>
+            {besetzte.length === 0 ? (
+              <div style={{ fontSize: 12.5, color: COLORS.textMuted, fontStyle: "italic" }}>Niemand belegt in diesem Zeitraum.</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {besetzte.map(({ mitarbeiter: m, konflikte }) => (
+                  <div key={m.id} style={{ padding: "8px 12px", background: "#FFF7ED", borderRadius: 8 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                      <span style={{ width: 9, height: 9, borderRadius: "50%", background: m.farbe }} />
+                      <span style={{ fontSize: 13, fontWeight: 600 }}>{m.name}</span>
+                    </div>
+                    {konflikte.map((b) => (
+                      <div
+                        key={b.id}
+                        onClick={() => onBaustelleClick(b)}
+                        style={{ fontSize: 11.5, color: COLORS.textMuted, cursor: "pointer", paddingLeft: 17 }}
+                      >
+                        → {b.kunde} ({b.beginn}{b.beginn !== b.ende ? ` – ${b.ende}` : ""}{formatZeitraum(b) ? `, ${formatZeitraum(b)}` : ""})
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StundenUebersicht({ baustellen, mitarbeiter }) {
+  const [zeitraum, setZeitraum] = useState("woche"); // tag | woche | monat
+  const [anker, setAnker] = useState(new Date());
+
+  const { beginn, ende } = periodenGrenzen(zeitraum, anker);
+  const anzahlTage = alleTageZwischen(beginn, ende).length;
+  const kapazitaetGesamt = anzahlTage * STANDARD_TAGESKAPAZITAET;
+
+  const gehePrev = () => setAnker((d) => (zeitraum === "tag" ? addDays(d, -1) : zeitraum === "woche" ? addDays(d, -7) : new Date(d.getFullYear(), d.getMonth() - 1, 1)));
+  const geheNext = () => setAnker((d) => (zeitraum === "tag" ? addDays(d, 1) : zeitraum === "woche" ? addDays(d, 7) : new Date(d.getFullYear(), d.getMonth() + 1, 1)));
+
+  const label = zeitraum === "tag"
+    ? anker.toLocaleDateString("de-DE", { weekday: "long", day: "2-digit", month: "long", year: "numeric" })
+    : `${beginn} – ${ende}`;
+
+  const zeilen = mitarbeiter.map((m) => {
+    const gebucht = stundenGebuchtFuerPeriode(m.id, beginn, ende, baustellen);
+    const verfuegbar = kapazitaetGesamt - gebucht;
+    const auslastungProzent = kapazitaetGesamt > 0 ? Math.min(100, Math.round((gebucht / kapazitaetGesamt) * 100)) : 0;
+    return { mitarbeiter: m, gebucht, verfuegbar, auslastungProzent };
+  });
+
+  return (
+    <div style={{ maxWidth: 720 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", background: COLORS.bgMain, borderRadius: 8, padding: 3, gap: 2 }}>
+          {[["tag", "Tag"], ["woche", "Woche"], ["monat", "Monat"]].map(([v, l]) => (
+            <button
+              key={v}
+              onClick={() => setZeitraum(v)}
+              style={{
+                padding: "7px 13px", borderRadius: 6, border: "none", cursor: "pointer",
+                fontSize: 12.5, fontWeight: 700,
+                background: zeitraum === v ? COLORS.card : "transparent",
+                color: zeitraum === v ? COLORS.textDark : COLORS.textMuted,
+                boxShadow: zeitraum === v ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
+              }}
+            >
+              {l}
+            </button>
+          ))}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <button onClick={gehePrev} style={navBtnStyle}><ChevronLeft size={16} /></button>
+          <div style={{ fontSize: 13, fontWeight: 700, minWidth: 160, textAlign: "center", textTransform: "capitalize" }}>{label}</div>
+          <button onClick={geheNext} style={navBtnStyle}><ChevronRight size={16} /></button>
+        </div>
+      </div>
+
+      <div style={{ fontSize: 11.5, color: COLORS.textMuted, marginBottom: 12 }}>
+        Angenommene Tageskapazität: {STANDARD_TAGESKAPAZITAET} Std./Tag ({anzahlTage} Tag{anzahlTage !== 1 ? "e" : ""} im Zeitraum = {kapazitaetGesamt} Std. Kapazität). Termine ohne Uhrzeitangabe zählen als ganzer Tag.
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {zeilen.map(({ mitarbeiter: m, gebucht, verfuegbar, auslastungProzent }) => (
+          <div key={m.id} style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "12px 16px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              <span style={{ width: 9, height: 9, borderRadius: "50%", background: m.farbe, flexShrink: 0 }} />
+              <span style={{ fontSize: 13.5, fontWeight: 700, flex: 1 }}>{m.name}</span>
+              <span style={{ fontSize: 12.5, fontWeight: 700, color: verfuegbar < 0 ? "#B42318" : COLORS.brandGreen }}>
+                {verfuegbar < 0 ? `${verfuegbar} Std. überbucht` : `${verfuegbar} Std. verfügbar`}
+              </span>
+            </div>
+            <div style={{ height: 7, borderRadius: 4, background: "#F0EFEA", overflow: "hidden" }}>
+              <div style={{
+                height: "100%", width: `${auslastungProzent}%`, borderRadius: 4,
+                background: auslastungProzent >= 100 ? "#B42318" : auslastungProzent >= 75 ? "#B45309" : COLORS.brandGreen,
+              }} />
+            </div>
+            <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 4 }}>
+              {gebucht} von {kapazitaetGesamt} Std. gebucht ({auslastungProzent}%)
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
