@@ -153,6 +153,23 @@ function periodenGrenzen(zeitraum, datum) {
   const ende = new Date(datum.getFullYear(), datum.getMonth() + 1, 0);
   return { beginn: fmt(start), ende: fmt(ende) };
 }
+// Capacité réelle d'un employé sur une période : jours du calendrier (moins
+// le week-end si exclu) MOINS les jours où il est en absence (Urlaub/
+// Krankheit/Fortbildung), puisqu'il ne peut de toute façon pas travailler.
+function kapazitaetFuerMitarbeiter(mitarbeiterId, periodeBeginn, periodeEnde, abwesenheiten, wochenendeEinschliessen) {
+  let kap = 0;
+  let abwesendeTage = 0;
+  for (const tag of alleTageZwischen(periodeBeginn, periodeEnde)) {
+    if (!wochenendeEinschliessen && istWochenendtag(tag)) continue;
+    const istAbwesend = (abwesenheiten || []).some((a) => a.mitarbeiterId === mitarbeiterId && a.beginn <= tag && tag <= a.ende);
+    if (istAbwesend) {
+      abwesendeTage++;
+    } else {
+      kap += STANDARD_TAGESKAPAZITAET;
+    }
+  }
+  return { kapazitaet: kap, abwesendeTage };
+}
 // Heures déjà réservées pour un employé sur une période donnée, en sommant
 // chaque jour où son affectation est active.
 function stundenGebuchtFuerPeriode(mitarbeiterId, periodeBeginn, periodeEnde, baustellen, wochenendeEinschliessen = true) {
@@ -251,6 +268,21 @@ function mapProjektRow(row) {
     status: row.status || "aktiv", // "aktiv" | "abgeschlossen" — décidé uniquement par un admin
   };
 }
+function mapAbwesenheitRow(row) {
+  return {
+    id: row.id,
+    mitarbeiterId: row.mitarbeiter_id,
+    typ: row.typ, // "urlaub" | "krankheit" | "fortbildung"
+    beginn: row.beginn,
+    ende: row.ende,
+    notiz: row.notiz || "",
+  };
+}
+const ABWESENHEIT_LABEL = { urlaub: "Urlaub", krankheit: "Krankheit", fortbildung: "Fortbildung" };
+const ABWESENHEIT_FARBE = { urlaub: "#0B7285", krankheit: "#B42318", fortbildung: "#6B46C1" };
+function findeAbwesenheitenFuerZeitraum(mitarbeiterId, beginn, ende, abwesenheiten) {
+  return abwesenheiten.filter((a) => a.mitarbeiterId === mitarbeiterId && rangesOverlap(a.beginn, a.ende, beginn, ende));
+}
 function formatAdresse(b) {
   const zeile2 = [b.plz, b.stadt].filter(Boolean).join(" ");
   return [b.strasse, zeile2].filter(Boolean).join(", ");
@@ -292,7 +324,7 @@ const EMPTY_KUNDE_FORM = { id: null, name: "", kontaktName: "", kontaktTelefon: 
 const EMPTY_PROJEKT_FORM = { id: null, titel: "", kundeId: null, kundeNameEingabe: "" };
 
 export default function Baustellenplanung() {
-  const [data, setData] = useState({ mitarbeiter: [], baustellen: [], kunden: [], projekte: [] });
+  const [data, setData] = useState({ mitarbeiter: [], baustellen: [], kunden: [], projekte: [], abwesenheiten: [] });
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(null);
   const [page, setPage] = useState("kalender"); // kalender | projekte | kunden
@@ -326,13 +358,14 @@ export default function Baustellenplanung() {
           supabase.from("baustellen").select("*").order("created_at", { ascending: true }),
           supabase.from("zuweisungen").select("*"),
           supabase.from("kunden").select("*").order("name", { ascending: true }),
-          supabase.from("projekte").select("*").order("nummer", { ascending: false })
+          supabase.from("projekte").select("*").order("nummer", { ascending: false }),
+          supabase.from("abwesenheiten").select("*").order("beginn", { ascending: false })
         );
       }
       const results = await Promise.all(calls);
       const [{ data: mRows, error: mErr }] = results;
-      const bErrRes = results[1], zErrRes = results[2], kErrRes = results[3], pErrRes = results[4];
-      const anyErr = mErr || bErrRes?.error || zErrRes?.error || kErrRes?.error || pErrRes?.error;
+      const bErrRes = results[1], zErrRes = results[2], kErrRes = results[3], pErrRes = results[4], aErrRes = results[5];
+      const anyErr = mErr || bErrRes?.error || zErrRes?.error || kErrRes?.error || pErrRes?.error || aErrRes?.error;
       if (anyErr) {
         setError(`Fehler beim Laden: ${anyErr.message}`);
       } else {
@@ -343,6 +376,7 @@ export default function Baustellenplanung() {
         baustellen: bErrRes ? (bErrRes.data || []).map((row) => mapBaustelleRow(row, zErrRes?.data)) : [],
         kunden: kErrRes ? (kErrRes.data || []).map(mapKundeRow) : [],
         projekte: pErrRes ? (pErrRes.data || []).map(mapProjektRow) : [],
+        abwesenheiten: aErrRes ? (aErrRes.data || []).map(mapAbwesenheitRow) : [],
       });
     } catch (e) {
       setError("Verbindung zu Supabase fehlgeschlagen. Bitte .env prüfen.");
@@ -482,6 +516,23 @@ export default function Baustellenplanung() {
     setData((d) => ({ ...d, kunden: d.kunden.filter((k) => k.id !== kundeForm.id) }));
     setKundeModalOpen(false);
   };
+
+  // --- Abwesenheiten (Urlaub, Krankheit, Fortbildung) ---
+  const addAbwesenheit = async ({ mitarbeiterId, typ, beginn, ende, notiz }) => {
+    const { data: inserted, error: err } = await supabase
+      .from("abwesenheiten")
+      .insert({ mitarbeiter_id: mitarbeiterId, typ, beginn, ende, notiz: notiz.trim() })
+      .select()
+      .single();
+    if (err) { setError(`Fehler beim Speichern: ${err.message}`); return; }
+    setData((d) => ({ ...d, abwesenheiten: [mapAbwesenheitRow(inserted), ...d.abwesenheiten] }));
+  };
+  const removeAbwesenheit = async (id) => {
+    const { error: err } = await supabase.from("abwesenheiten").delete().eq("id", id);
+    if (err) { setError(`Fehler beim Löschen: ${err.message}`); return; }
+    setData((d) => ({ ...d, abwesenheiten: d.abwesenheiten.filter((a) => a.id !== id) }));
+  };
+
   // Applique les valeurs par défaut d'un client sélectionné aux champs du formulaire de chantier
   const applyKundeToForm = (kunde) => {
     setForm((f) => ({
@@ -774,15 +825,21 @@ export default function Baustellenplanung() {
     setModalOpen(false);
   };
   const toggleFormMitarbeiter = (id) => {
-    setForm((f) => {
-      const exists = f.zuweisungen.some((z) => z.mitarbeiterId === id);
-      return {
-        ...f,
-        zuweisungen: exists
-          ? f.zuweisungen.filter((z) => z.mitarbeiterId !== id)
-          : [...f.zuweisungen, { mitarbeiterId: id, beginn: f.beginn, ende: f.ende }],
-      };
-    });
+    const exists = form.zuweisungen.some((z) => z.mitarbeiterId === id);
+    if (!exists) {
+      const abwesenheiten = findeAbwesenheitenFuerZeitraum(id, form.beginn, form.ende, data.abwesenheiten);
+      if (abwesenheiten.length > 0) {
+        const person = data.mitarbeiter.find((m) => m.id === id);
+        const details = abwesenheiten.map((a) => `${ABWESENHEIT_LABEL[a.typ] || a.typ} (${a.beginn} – ${a.ende})${a.notiz ? ` — ${a.notiz}` : ""}`).join("\n");
+        window.alert(`${person?.name || "Diese Person"} ist in diesem Zeitraum abwesend:\n\n${details}`);
+      }
+    }
+    setForm((f) => ({
+      ...f,
+      zuweisungen: exists
+        ? f.zuweisungen.filter((z) => z.mitarbeiterId !== id)
+        : [...f.zuweisungen, { mitarbeiterId: id, beginn: f.beginn, ende: f.ende }],
+    }));
   };
   const updateFormZuweisung = (id, field, value) => {
     setForm((f) => ({
@@ -1111,6 +1168,7 @@ export default function Baustellenplanung() {
                   currentDate={currentDate}
                   baustellenFor={baustellenFor}
                   alleMitarbeiter={data.mitarbeiter}
+                  abwesenheiten={data.abwesenheiten}
                   onDayClick={openNewBaustelle}
                   onBaustelleClick={openEditBaustelle}
                 />
@@ -1121,6 +1179,7 @@ export default function Baustellenplanung() {
                   mitarbeiter={displayedColleagues.length ? displayedColleagues : visibleMitarbeiterList}
                   baustellen={data.baustellen}
                   alleMitarbeiter={data.mitarbeiter}
+                  abwesenheiten={data.abwesenheiten}
                   isAdmin={isAdmin && !filterId}
                   onCellClick={openNewBaustelle}
                   onBaustelleClick={openEditBaustelle}
@@ -1162,8 +1221,13 @@ export default function Baustellenplanung() {
           <RessourcenPage
             baustellen={data.baustellen}
             mitarbeiter={data.mitarbeiter}
+            abwesenheiten={data.abwesenheiten}
+            isAdmin={isAdmin}
+            currentUserId={currentUserId}
             onOpenSidebar={() => setSidebarOpen(true)}
             onBaustelleClick={openEditBaustelle}
+            onAddAbwesenheit={addAbwesenheit}
+            onRemoveAbwesenheit={removeAbwesenheit}
             error={error}
           />
         )}
@@ -1487,7 +1551,7 @@ const navBtnStyle = {
   borderRadius: 7, border: `1px solid ${COLORS.border}`, background: COLORS.card, cursor: "pointer", color: COLORS.textDark,
 };
 
-function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, onDayClick, onBaustelleClick }) {
+function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, abwesenheiten, onDayClick, onBaustelleClick }) {
   const currentMonth = currentDate.getMonth();
   const today = new Date();
   return (
@@ -1514,6 +1578,11 @@ function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, onDayCli
           const isToday = isSameDay(date, today);
           const spalte = i % 7;
           const istWochenende = spalte === 5 || spalte === 6; // Sa, So
+          const ds = fmt(date);
+          const abwesendeHeute = (abwesenheiten || [])
+            .filter((a) => a.beginn <= ds && ds <= a.ende)
+            .map((a) => alleMitarbeiter.find((m) => m.id === a.mitarbeiterId))
+            .filter(Boolean);
           return (
             <div
               key={i}
@@ -1572,6 +1641,14 @@ function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, onDayCli
                     +{items.length - 3} weitere
                   </div>
                 )}
+                {abwesendeHeute.length > 0 && (
+                  <div
+                    title={abwesendeHeute.map((m) => m.name).join(", ")}
+                    style={{ fontSize: 9.5, color: COLORS.textMuted, fontWeight: 600, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  >
+                    🏖 {abwesendeHeute.length === 1 ? abwesendeHeute[0].name : `${abwesendeHeute.length} abwesend`}
+                  </div>
+                )}
               </div>
             </div>
           );
@@ -1581,13 +1658,18 @@ function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, onDayCli
   );
 }
 
-function ResourceView({ dates, mitarbeiter, baustellen, alleMitarbeiter, isAdmin, onCellClick, onBaustelleClick }) {
+function ResourceView({ dates, mitarbeiter, baustellen, alleMitarbeiter, abwesenheiten, isAdmin, onCellClick, onBaustelleClick }) {
   const today = new Date();
   const rowFor = (person, date) => {
     if (person.id === "__unassigned") {
       return baustellen.filter((b) => isActiveOn(b, date) && !(b.zuweisungen || []).some((z) => isZuweisungAktivAm(z, date)));
     }
     return baustellen.filter((b) => (b.zuweisungen || []).some((z) => z.mitarbeiterId === person.id && isZuweisungAktivAm(z, date)));
+  };
+  const abwesenheitFuer = (person, date) => {
+    if (person.id === "__unassigned" || person.id === "__none") return null;
+    const ds = fmt(date);
+    return (abwesenheiten || []).find((a) => a.mitarbeiterId === person.id && a.beginn <= ds && ds <= a.ende) || null;
   };
   const rows = [
     ...mitarbeiter,
@@ -1628,6 +1710,7 @@ function ResourceView({ dates, mitarbeiter, baustellen, alleMitarbeiter, isAdmin
           </div>
           {dates.map((d, i) => {
             const items = person.id === "__none" ? [] : rowFor(person, d);
+            const abwesenheit = abwesenheitFuer(person, d);
             const istWochenende = d.getDay() === 0 || d.getDay() === 6;
             return (
               <div
@@ -1639,6 +1722,18 @@ function ResourceView({ dates, mitarbeiter, baustellen, alleMitarbeiter, isAdmin
                   background: istWochenende ? hexToRgba(COLORS.accent, 0.03) : "transparent",
                 }}
               >
+                {abwesenheit && (
+                  <div
+                    title={abwesenheit.notiz || ""}
+                    style={{
+                      fontSize: 10, fontWeight: 700, padding: "3px 6px", borderRadius: 4, color: "#fff",
+                      background: ABWESENHEIT_FARBE[abwesenheit.typ] || COLORS.textMuted,
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    }}
+                  >
+                    {ABWESENHEIT_LABEL[abwesenheit.typ] || abwesenheit.typ}
+                  </div>
+                )}
                 {items.map((b) => {
                   const rowColor = person.farbe || COLORS.textMuted;
                   return (
@@ -2552,8 +2647,8 @@ function KundenListPage({ kunden, baustellen, onOpenSidebar, onNew, onEdit, erro
   );
 }
 
-function RessourcenPage({ baustellen, mitarbeiter, onOpenSidebar, onBaustelleClick, error }) {
-  const [modus, setModus] = useState("verfuegbarkeit"); // verfuegbarkeit | stunden
+function RessourcenPage({ baustellen, mitarbeiter, abwesenheiten, isAdmin, currentUserId, onOpenSidebar, onBaustelleClick, onAddAbwesenheit, onRemoveAbwesenheit, error }) {
+  const [modus, setModus] = useState("verfuegbarkeit"); // verfuegbarkeit | stunden | abwesenheiten
 
   return (
     <>
@@ -2561,8 +2656,8 @@ function RessourcenPage({ baustellen, mitarbeiter, onOpenSidebar, onBaustelleCli
       {error && <div style={{ background: "#FDECEA", color: "#B42318", fontSize: 12.5, padding: "8px 22px" }}>{error}</div>}
 
       <div style={{ padding: "16px 22px 0" }}>
-        <div style={{ display: "flex", background: COLORS.bgMain, borderRadius: 8, padding: 3, gap: 2, width: "fit-content" }}>
-          {[["verfuegbarkeit", "Verfügbarkeit prüfen"], ["stunden", "Stunden-Übersicht"]].map(([v, label]) => (
+        <div style={{ display: "flex", background: COLORS.bgMain, borderRadius: 8, padding: 3, gap: 2, width: "fit-content", flexWrap: "wrap" }}>
+          {[["verfuegbarkeit", "Verfügbarkeit prüfen"], ["stunden", "Stunden-Übersicht"], ["abwesenheiten", "Abwesenheiten"]].map(([v, label]) => (
             <button
               key={v}
               onClick={() => setModus(v)}
@@ -2581,17 +2676,28 @@ function RessourcenPage({ baustellen, mitarbeiter, onOpenSidebar, onBaustelleCli
       </div>
 
       <div style={{ flex: 1, overflow: "auto", padding: 20 }}>
-        {modus === "verfuegbarkeit" ? (
-          <VerfuegbarkeitPruefen baustellen={baustellen} mitarbeiter={mitarbeiter} onBaustelleClick={onBaustelleClick} />
-        ) : (
-          <StundenUebersicht baustellen={baustellen} mitarbeiter={mitarbeiter} />
+        {modus === "verfuegbarkeit" && (
+          <VerfuegbarkeitPruefen baustellen={baustellen} mitarbeiter={mitarbeiter} abwesenheiten={abwesenheiten} onBaustelleClick={onBaustelleClick} />
+        )}
+        {modus === "stunden" && (
+          <StundenUebersicht baustellen={baustellen} mitarbeiter={mitarbeiter} abwesenheiten={abwesenheiten} />
+        )}
+        {modus === "abwesenheiten" && (
+          <AbwesenheitenPage
+            mitarbeiter={mitarbeiter}
+            abwesenheiten={abwesenheiten}
+            isAdmin={isAdmin}
+            currentUserId={currentUserId}
+            onAdd={onAddAbwesenheit}
+            onRemove={onRemoveAbwesenheit}
+          />
         )}
       </div>
     </>
   );
 }
 
-function VerfuegbarkeitPruefen({ baustellen, mitarbeiter, onBaustelleClick }) {
+function VerfuegbarkeitPruefen({ baustellen, mitarbeiter, abwesenheiten, onBaustelleClick }) {
   const heute = fmt(new Date());
   const [von, setVon] = useState(heute);
   const [bis, setBis] = useState(heute);
@@ -2602,7 +2708,8 @@ function VerfuegbarkeitPruefen({ baustellen, mitarbeiter, onBaustelleClick }) {
 
   const ergebnisse = mitarbeiter.map((m) => {
     const konflikte = findeKonflikteFuerVerfuegbarkeit(m.id, von, bis, uhrzeitVon, uhrzeitBis, baustellen, wochenendeEinschliessen);
-    return { mitarbeiter: m, frei: konflikte.length === 0, konflikte };
+    const abwesend = findeAbwesenheitenFuerZeitraum(m.id, von, bis, abwesenheiten || []);
+    return { mitarbeiter: m, frei: konflikte.length === 0 && abwesend.length === 0, konflikte, abwesend };
   });
   const freie = ergebnisse.filter((e) => e.frei);
   const besetzte = ergebnisse.filter((e) => !e.frei);
@@ -2663,12 +2770,17 @@ function VerfuegbarkeitPruefen({ baustellen, mitarbeiter, onBaustelleClick }) {
               <div style={{ fontSize: 12.5, color: COLORS.textMuted, fontStyle: "italic" }}>Niemand belegt in diesem Zeitraum.</div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {besetzte.map(({ mitarbeiter: m, konflikte }) => (
+                {besetzte.map(({ mitarbeiter: m, konflikte, abwesend }) => (
                   <div key={m.id} style={{ padding: "8px 12px", background: "#FFF7ED", borderRadius: 8 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
                       <span style={{ width: 9, height: 9, borderRadius: "50%", background: m.farbe }} />
                       <span style={{ fontSize: 13, fontWeight: 600 }}>{m.name}</span>
                     </div>
+                    {abwesend.map((a) => (
+                      <div key={a.id} style={{ fontSize: 11.5, color: ABWESENHEIT_FARBE[a.typ] || COLORS.textMuted, fontWeight: 700, paddingLeft: 17 }}>
+                        → {ABWESENHEIT_LABEL[a.typ] || a.typ} ({a.beginn}{a.beginn !== a.ende ? ` – ${a.ende}` : ""}){a.notiz ? ` — ${a.notiz}` : ""}
+                      </div>
+                    ))}
                     {konflikte.map((b) => (
                       <div
                         key={b.id}
@@ -2689,14 +2801,13 @@ function VerfuegbarkeitPruefen({ baustellen, mitarbeiter, onBaustelleClick }) {
   );
 }
 
-function StundenUebersicht({ baustellen, mitarbeiter }) {
+function StundenUebersicht({ baustellen, mitarbeiter, abwesenheiten }) {
   const [zeitraum, setZeitraum] = useState("woche"); // tag | woche | monat
   const [anker, setAnker] = useState(new Date());
   const [wochenendeEinschliessen, setWochenendeEinschliessen] = useState(true);
 
   const { beginn, ende } = periodenGrenzen(zeitraum, anker);
   const anzahlTage = alleTageZwischen(beginn, ende).filter((t) => wochenendeEinschliessen || !istWochenendtag(t)).length;
-  const kapazitaetGesamt = anzahlTage * STANDARD_TAGESKAPAZITAET;
 
   const gehePrev = () => setAnker((d) => (zeitraum === "tag" ? addDays(d, -1) : zeitraum === "woche" ? addDays(d, -7) : new Date(d.getFullYear(), d.getMonth() - 1, 1)));
   const geheNext = () => setAnker((d) => (zeitraum === "tag" ? addDays(d, 1) : zeitraum === "woche" ? addDays(d, 7) : new Date(d.getFullYear(), d.getMonth() + 1, 1)));
@@ -2706,10 +2817,11 @@ function StundenUebersicht({ baustellen, mitarbeiter }) {
     : `${beginn} – ${ende}`;
 
   const zeilen = mitarbeiter.map((m) => {
+    const { kapazitaet, abwesendeTage } = kapazitaetFuerMitarbeiter(m.id, beginn, ende, abwesenheiten, wochenendeEinschliessen);
     const gebucht = stundenGebuchtFuerPeriode(m.id, beginn, ende, baustellen, wochenendeEinschliessen);
-    const verfuegbar = kapazitaetGesamt - gebucht;
-    const auslastungProzent = kapazitaetGesamt > 0 ? Math.min(100, Math.round((gebucht / kapazitaetGesamt) * 100)) : 0;
-    return { mitarbeiter: m, gebucht, verfuegbar, auslastungProzent };
+    const verfuegbar = kapazitaet - gebucht;
+    const auslastungProzent = kapazitaet > 0 ? Math.min(100, Math.round((gebucht / kapazitaet) * 100)) : 0;
+    return { mitarbeiter: m, kapazitaet, gebucht, verfuegbar, auslastungProzent, abwesendeTage };
   });
 
   return (
@@ -2744,11 +2856,11 @@ function StundenUebersicht({ baustellen, mitarbeiter }) {
       </div>
 
       <div style={{ fontSize: 11.5, color: COLORS.textMuted, marginBottom: 12 }}>
-        Angenommene Tageskapazität: {STANDARD_TAGESKAPAZITAET} Std./Tag ({anzahlTage} Tag{anzahlTage !== 1 ? "e" : ""} im Zeitraum = {kapazitaetGesamt} Std. Kapazität). Termine ohne Uhrzeitangabe zählen als ganzer Tag.
+        Angenommene Tageskapazität: {STANDARD_TAGESKAPAZITAET} Std./Tag, {anzahlTage} Tag{anzahlTage !== 1 ? "e" : ""} im Zeitraum. Termine ohne Uhrzeitangabe zählen als ganzer Tag. Tage mit eingetragener Abwesenheit zählen nicht zur Kapazität.
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {zeilen.map(({ mitarbeiter: m, gebucht, verfuegbar, auslastungProzent }) => (
+        {zeilen.map(({ mitarbeiter: m, kapazitaet, gebucht, verfuegbar, auslastungProzent, abwesendeTage }) => (
           <div key={m.id} style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "12px 16px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
               <span style={{ width: 9, height: 9, borderRadius: "50%", background: m.farbe, flexShrink: 0 }} />
@@ -2764,11 +2876,129 @@ function StundenUebersicht({ baustellen, mitarbeiter }) {
               }} />
             </div>
             <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 4 }}>
-              {gebucht} von {kapazitaetGesamt} Std. gebucht ({auslastungProzent}%)
+              {gebucht} von {kapazitaet} Std. gebucht ({auslastungProzent}%)
+              {abwesendeTage > 0 && ` · ${abwesendeTage} Tag${abwesendeTage !== 1 ? "e" : ""} abwesend`}
             </div>
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function AbwesenheitenPage({ mitarbeiter, abwesenheiten, isAdmin, currentUserId, onAdd, onRemove }) {
+  const heute = fmt(new Date());
+  const [formOffen, setFormOffen] = useState(false);
+  const [mitarbeiterId, setMitarbeiterId] = useState(isAdmin ? "" : currentUserId || "");
+  const [typ, setTyp] = useState("urlaub");
+  const [beginn, setBeginn] = useState(heute);
+  const [ende, setEnde] = useState(heute);
+  const [notiz, setNotiz] = useState("");
+
+  const sichtbare = (isAdmin ? mitarbeiter : mitarbeiter.filter((m) => m.id === currentUserId));
+  const eintraege = abwesenheiten
+    .filter((a) => isAdmin || a.mitarbeiterId === currentUserId)
+    .sort((a, b) => (a.beginn < b.beginn ? 1 : -1));
+
+  const submit = () => {
+    if (!mitarbeiterId || !beginn || !ende) return;
+    onAdd({ mitarbeiterId, typ, beginn, ende, notiz });
+    setFormOffen(false);
+    setNotiz("");
+  };
+
+  const TYP_FARBE = ABWESENHEIT_FARBE;
+
+  return (
+    <div style={{ maxWidth: 640 }}>
+      {!formOffen ? (
+        <button onClick={() => setFormOffen(true)} style={{ ...btnPrimary, marginBottom: 16, display: "flex", alignItems: "center", gap: 6 }}>
+          <Plus size={16} /> Abwesenheit eintragen
+        </button>
+      ) : (
+        <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 16, marginBottom: 16 }}>
+          {isAdmin && (
+            <Field label="Mitarbeiter">
+              <select style={inputStyle} value={mitarbeiterId} onChange={(e) => setMitarbeiterId(e.target.value)}>
+                <option value="">Auswählen…</option>
+                {sichtbare.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+              </select>
+            </Field>
+          )}
+          <Field label="Grund">
+            <div style={{ display: "flex", gap: 8 }}>
+              {[["urlaub", "Urlaub"], ["krankheit", "Krankheit"], ["fortbildung", "Fortbildung"]].map(([v, l]) => (
+                <button
+                  key={v}
+                  onClick={() => setTyp(v)}
+                  style={{
+                    flex: 1, padding: "8px 0", borderRadius: 7, cursor: "pointer", fontSize: 12.5, fontWeight: 700,
+                    border: `1.5px solid ${typ === v ? TYP_FARBE[v] : COLORS.border}`,
+                    background: typ === v ? TYP_FARBE[v] : "#fff",
+                    color: typ === v ? "#fff" : COLORS.textMuted,
+                  }}
+                >
+                  {l}
+                </button>
+              ))}
+            </div>
+          </Field>
+          <div style={{ display: "flex", gap: 10 }}>
+            <Field label="Von" style={{ flex: 1 }}>
+              <input type="date" style={inputStyle} value={beginn} onChange={(e) => { setBeginn(e.target.value); if (e.target.value > ende) setEnde(e.target.value); }} />
+            </Field>
+            <Field label="Bis" style={{ flex: 1 }}>
+              <input type="date" style={inputStyle} value={ende} min={beginn} onChange={(e) => setEnde(e.target.value)} />
+            </Field>
+          </div>
+          <Field label="Notiz (optional)">
+            <input style={inputStyle} value={notiz} onChange={(e) => setNotiz(e.target.value)} placeholder="z. B. Grund, Vertretung, …" />
+          </Field>
+          <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+            <button onClick={() => setFormOffen(false)} style={btnSecondary}>Abbrechen</button>
+            <button onClick={submit} disabled={!mitarbeiterId} style={{ ...btnPrimary, flex: 1, opacity: mitarbeiterId ? 1 : 0.5 }}>Speichern</button>
+          </div>
+        </div>
+      )}
+
+      {eintraege.length === 0 ? (
+        <div style={{ textAlign: "center", color: COLORS.textMuted, fontSize: 13.5, padding: 40 }}>
+          Noch keine Abwesenheiten eingetragen.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {eintraege.map((a) => {
+            const person = mitarbeiter.find((m) => m.id === a.mitarbeiterId);
+            const vorbei = a.ende < heute;
+            return (
+              <div key={a.id} style={{
+                display: "flex", alignItems: "center", gap: 12, background: COLORS.card,
+                border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "10px 14px", opacity: vorbei ? 0.55 : 1,
+              }}>
+                <span style={{ width: 9, height: 9, borderRadius: "50%", background: person?.farbe, flexShrink: 0 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>{person?.name || "?"}</div>
+                  {a.notiz && <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>{a.notiz}</div>}
+                </div>
+                <div style={{
+                  fontSize: 10.5, fontWeight: 700, padding: "3px 9px", borderRadius: 20, textTransform: "uppercase",
+                  background: hexToRgba(TYP_FARBE[a.typ] || COLORS.textMuted, 0.12), color: TYP_FARBE[a.typ] || COLORS.textMuted,
+                }}>
+                  {ABWESENHEIT_LABEL[a.typ] || a.typ}
+                </div>
+                <div style={{ fontSize: 12, color: COLORS.textMuted, minWidth: 130, textAlign: "right" }}>
+                  {a.beginn}{a.beginn !== a.ende ? ` – ${a.ende}` : ""}
+                </div>
+                {(isAdmin || a.mitarbeiterId === currentUserId) && (
+                  <button onClick={() => onRemove(a.id)} style={{ border: "none", background: "transparent", cursor: "pointer", color: COLORS.textMuted, flexShrink: 0 }}>
+                    <Trash2 size={14} />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
