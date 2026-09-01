@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { Plus, X, MapPin, User, ChevronLeft, ChevronRight, Trash2, Users, LogOut, ShieldCheck, Calendar as CalendarIcon, Mail, Phone, Home, Send, Menu as MenuIcon, Clock, ClipboardList, Building2, Search, FileText, Download } from "lucide-react";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
+import * as XLSX from "xlsx";
 import { supabase } from "./supabaseClient";
 
 const COLORS = {
@@ -286,6 +287,7 @@ function mapMitarbeiterRow(row) {
     id: row.id,
     authUserId: row.auth_user_id || null,
     name: row.name,
+    nachname: row.nachname || "",
     email: row.email || "",
     telefon: row.telefon || "",
     adresse: row.adresse || "",
@@ -530,7 +532,7 @@ export default function Baustellenplanung() {
   const updateMitarbeiterProfil = async (id, fields) => {
     const { error: err } = await supabase
       .from("mitarbeiter")
-      .update({ name: fields.name, email: fields.email, telefon: fields.telefon, adresse: fields.adresse })
+      .update({ name: fields.name, nachname: fields.nachname, email: fields.email, telefon: fields.telefon, adresse: fields.adresse })
       .eq("id", id);
     if (err) {
       setError(`Fehler beim Speichern: ${err.message}`);
@@ -1014,6 +1016,16 @@ export default function Baustellenplanung() {
     );
   }
 
+  if (!me.nachname?.trim() || !me.email?.trim()) {
+    return (
+      <ProfilVervollstaendigenGate
+        me={me}
+        onSave={(fields) => updateMitarbeiterProfil(me.id, fields)}
+        onLogout={switchUser}
+      />
+    );
+  }
+
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: COLORS.bgMain, fontFamily: "system-ui, -apple-system, sans-serif", color: COLORS.textDark }}>
       <style>{`
@@ -1372,6 +1384,46 @@ export default function Baustellenplanung() {
 
 function passwortOk(pw) {
   return pw.length >= 8;
+}
+
+function ProfilVervollstaendigenGate({ me, onSave, onLogout }) {
+  const [name, setName] = useState(me.name || "");
+  const [nachname, setNachname] = useState(me.nachname || "");
+  const [email, setEmail] = useState(me.email || "");
+  const [speichert, setSpeichert] = useState(false);
+
+  const kannSpeichern = name.trim() && nachname.trim() && email.trim();
+
+  const speichern = async () => {
+    if (!kannSpeichern) return;
+    setSpeichert(true);
+    await onSave({ name: name.trim(), nachname: nachname.trim(), email: email.trim(), telefon: me.telefon, adresse: me.adresse });
+    setSpeichert(false);
+  };
+
+  return (
+    <div style={{ background: COLORS.bgDark, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "system-ui, sans-serif", padding: 16 }}>
+      <div style={{ background: "#fff", borderRadius: 16, padding: 30, width: "100%", maxWidth: 380 }}>
+        <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 6 }}>Profil vervollständigen</div>
+        <div style={{ fontSize: 12.5, color: COLORS.textMuted, marginBottom: 18 }}>
+          Vorname, Nachname und E-Mail werden benötigt, unter anderem für den Stundennachweis. Bitte einmalig ausfüllen, um fortzufahren.
+        </div>
+        <Field label="Vorname">
+          <input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder="Vorname" />
+        </Field>
+        <Field label="Nachname">
+          <input style={inputStyle} value={nachname} onChange={(e) => setNachname(e.target.value)} placeholder="Nachname" />
+        </Field>
+        <Field label="E-Mail">
+          <input type="email" style={inputStyle} value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@beispiel.de" />
+        </Field>
+        <button onClick={speichern} disabled={!kannSpeichern || speichert} style={{ ...btnPrimary, width: "100%", marginTop: 6, opacity: kannSpeichern ? 1 : 0.5 }}>
+          {speichert ? "…" : "Speichern und fortfahren"}
+        </button>
+        <button onClick={onLogout} style={{ ...btnSecondary, width: "100%", marginTop: 8 }}>Abmelden</button>
+      </div>
+    </div>
+  );
 }
 
 function IdentityGate({ mitarbeiter, hatSession, error, onCleanError }) {
@@ -2267,6 +2319,7 @@ function AddMitarbeiterButton({ verfuegbar, onAdd }) {
 
 function ProfileModal({ person, canEdit, onSave, onSendWochenplan, onClose }) {
   const [name, setName] = useState(person?.name || "");
+  const [nachname, setNachname] = useState(person?.nachname || "");
   const [email, setEmail] = useState(person?.email || "");
   const [telefon, setTelefon] = useState(person?.telefon || "");
   const [adresse, setAdresse] = useState(person?.adresse || "");
@@ -2276,7 +2329,7 @@ function ProfileModal({ person, canEdit, onSave, onSendWochenplan, onClose }) {
 
   const handleSave = () => {
     if (!name.trim()) return;
-    onSave({ name: name.trim(), email: email.trim(), telefon: telefon.trim(), adresse: adresse.trim() });
+    onSave({ name: name.trim(), nachname: nachname.trim(), email: email.trim(), telefon: telefon.trim(), adresse: adresse.trim() });
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   };
@@ -2293,12 +2346,20 @@ function ProfileModal({ person, canEdit, onSave, onSendWochenplan, onClose }) {
           <button onClick={onClose} style={{ border: "none", background: "transparent", cursor: "pointer", color: COLORS.textMuted }}><X size={18} /></button>
         </div>
 
-        <Field label="Name">
-          <input
-            style={inputStyle} value={name}
-            onChange={(e) => setName(e.target.value)} placeholder="Vor- und Nachname" disabled={!canEdit}
-          />
-        </Field>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Field label="Vorname" style={{ flex: 1 }}>
+            <input
+              style={inputStyle} value={name}
+              onChange={(e) => setName(e.target.value)} placeholder="Vorname" disabled={!canEdit}
+            />
+          </Field>
+          <Field label="Nachname" style={{ flex: 1 }}>
+            <input
+              style={inputStyle} value={nachname}
+              onChange={(e) => setNachname(e.target.value)} placeholder="Nachname" disabled={!canEdit}
+            />
+          </Field>
+        </div>
         <Field label="E-Mail">
           <div style={{ position: "relative" }}>
             <Mail size={14} style={{ position: "absolute", left: 10, top: 11, color: COLORS.textMuted }} />
@@ -3133,7 +3194,8 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, isAdmin, 
     }
     setEintraege(neu);
     setAufzeichnungsDaten({});
-    setArbeitnehmer(mitarbeiter.find((m) => m.id === mitarbeiterId)?.name || "");
+    const p = mitarbeiter.find((m) => m.id === mitarbeiterId);
+    setArbeitnehmer(p ? (p.nachname ? `${p.nachname}, ${p.name}` : p.name) : "");
   };
 
   useEffect(() => {
@@ -3189,6 +3251,46 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, isAdmin, 
     const neu = {};
     tage.forEach((t) => { if (t.arbeitstag) neu[t.datum] = heuteStr; });
     setAufzeichnungsDaten(neu);
+  };
+
+  const excelExportieren = () => {
+    const monatBeginn = fmt(new Date(jahr, monat, 1));
+    const monatEnde = fmt(new Date(jahr, monat + 1, 0));
+    const heuteStr = formatDatumDE(fmt(new Date()));
+    const zeilen = [];
+
+    zeilen.push([`Stundennachweis — ${arbeitnehmer || "Mitarbeiter"}`]);
+    zeilen.push([`Mitarbeiter: ${arbeitnehmer || "—"}`]);
+    zeilen.push([`Zeitraum: ${formatDatumDE(monatBeginn)} – ${formatDatumDE(monatEnde)}`]);
+    zeilen.push([`Erstellt am: ${heuteStr}`]);
+    zeilen.push([]);
+
+    wochenGruppen.forEach(([kw, tageMap]) => {
+      const wochenTage = Array.from(tageMap.entries());
+      const wochensumme = Math.round(wochenTage.reduce((s, [, z]) => s + z.reduce((ss, zz) => ss + (Number(zz.stunden) || 0), 0), 0) * 4) / 4;
+      zeilen.push([`KW-${String(kw).padStart(2, "0")}`, "", "", `${wochensumme} Std.`]);
+      zeilen.push(["Datum", "Kunde", "Leistung", "Std.H."]);
+      wochenTage.forEach(([ds, zeilenTag]) => {
+        if (zeilenTag.length === 0) {
+          zeilen.push([formatDatumDE(ds), "—", "", ""]);
+        } else {
+          zeilenTag.forEach((z, i) => {
+            zeilen.push([i === 0 ? formatDatumDE(ds) : "", z.kunde, z.leistung, Number(z.stunden) || 0]);
+          });
+        }
+      });
+      zeilen.push([]);
+    });
+
+    zeilen.push(["", "", "Gesamt:", `${summe} Std.`]);
+
+    const ws = XLSX.utils.aoa_to_sheet(zeilen);
+    ws["!cols"] = [{ wch: 14 }, { wch: 26 }, { wch: 40 }, { wch: 12 }];
+    ws["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 3 } }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Stundennachweis");
+    const dateiname = `Wochendetail_${(arbeitnehmer || "Mitarbeiter").replace(/[,\s]+/g, "_")}_${jahr}-${String(monat + 1).padStart(2, "0")}.xlsx`;
+    XLSX.writeFile(wb, dateiname);
   };
 
   const pdfErstellen = () => {
@@ -3280,7 +3382,12 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, isAdmin, 
         </Field>
       </div>
 
-      <div style={{ fontSize: 13.5, fontWeight: 800, marginBottom: 4 }}>Wochendetail (wie bisherige Excel-Liste)</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+        <div style={{ fontSize: 13.5, fontWeight: 800 }}>Wochendetail (wie bisherige Excel-Liste)</div>
+        <button onClick={excelExportieren} style={{ ...btnSecondary, fontSize: 11.5, display: "flex", alignItems: "center", gap: 5 }}>
+          <Download size={13} /> Als Excel exportieren
+        </button>
+      </div>
       <div style={{ fontSize: 11.5, color: COLORS.textMuted, marginBottom: 8 }}>
         Hier korrigieren — die Monatsübersicht unten wird automatisch daraus berechnet.
       </div>
