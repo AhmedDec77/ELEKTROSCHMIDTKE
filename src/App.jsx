@@ -2786,17 +2786,17 @@ function RessourcenPage({ baustellen, mitarbeiter, abwesenheiten, isAdmin, curre
       {error && <div style={{ background: "#FDECEA", color: "#B42318", fontSize: 12.5, padding: "8px 22px" }}>{error}</div>}
 
       <div style={{ padding: "16px 22px 0" }}>
-        <div style={{ display: "flex", background: COLORS.bgMain, borderRadius: 8, padding: 3, gap: 2, width: "fit-content", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 4, gap: 3, width: "fit-content", flexWrap: "wrap" }}>
           {[["verfuegbarkeit", "Verfügbarkeit prüfen"], ["stunden", "Stunden-Übersicht"], ["abwesenheiten", "Abwesenheiten"], ["stundennachweis", "Stundennachweis"]].map(([v, label]) => (
             <button
               key={v}
               onClick={() => setModus(v)}
               style={{
-                padding: "8px 15px", borderRadius: 6, border: "none", cursor: "pointer",
-                fontSize: 12.5, fontWeight: 700,
-                background: modus === v ? COLORS.card : "transparent",
-                color: modus === v ? COLORS.textDark : COLORS.textMuted,
-                boxShadow: modus === v ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
+                padding: "9px 16px", borderRadius: 7, border: "none", cursor: "pointer",
+                fontSize: 13, fontWeight: 700, letterSpacing: "0.01em", transition: "background 0.12s, color 0.12s",
+                background: modus === v ? COLORS.accent : "transparent",
+                color: modus === v ? "#fff" : COLORS.textDark,
+                boxShadow: modus === v ? "0 2px 6px rgba(188,49,63,0.28)" : "none",
               }}
             >
               {label}
