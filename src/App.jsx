@@ -517,10 +517,13 @@ export default function Baustellenplanung() {
 
   // Détermine automatiquement à quel projet rattacher un NOUVEAU rendez-vous,
   // en fonction des projets déjà actifs du client concerné.
-  const erstelleNeuesProjekt = async (kundeId, kundeName) => {
-    const titel = window.prompt(`Neues Projekt für ${kundeName} — wie soll es heißen? (leer lassen für automatischen Titel)`, "");
-    if (titel === null) return null; // annulé
-    const finalTitel = titel.trim() || `Projekt ${kundeName}`;
+  const erstelleNeuesProjekt = async (kundeId, kundeName, vorgegebenerTitel) => {
+    let finalTitel = vorgegebenerTitel?.trim();
+    if (!finalTitel) {
+      const titel = window.prompt(`Neues Projekt für ${kundeName} — wie soll es heißen? (leer lassen für automatischen Titel)`, "");
+      if (titel === null) return null; // annulé
+      finalTitel = titel.trim() || `Projekt ${kundeName}`;
+    }
     const { data: inserted, error: err } = await supabase
       .from("projekte")
       .insert({ titel: finalTitel, kunde_id: kundeId, status: "aktiv" })
@@ -600,12 +603,17 @@ export default function Baustellenplanung() {
       setData((d) => ({ ...d, kunden: [...d.kunden, mapKundeRow(neuerKunde)].sort((a, b) => a.name.localeCompare(b.name)) }));
     }
 
-    // Projekt : résolu automatiquement pour un NOUVEAU Termin (jamais
-    // re-demandé lors de la modification d'un Termin déjà existant).
+    // Projekt : résolu automatiquement pour un NOUVEAU Termin. Pour un Termin
+    // déjà existant, le projet reste inchangé — SAUF si l'utilisateur a
+    // explicitement utilisé "Projekt ändern" et tapé un nouveau titre non
+    // trouvé dans la liste, auquel cas on crée ce nouveau projet.
     let projektId = form.projektId;
     if (!form.id) {
       projektId = await resolveProjektFuerBuchung(kundeId, form.kunde.trim());
       if (!projektId) return; // l'utilisateur a annulé une étape du choix — on n'enregistre rien
+    } else if (!projektId && form.projektTitelEingabe.trim()) {
+      projektId = await erstelleNeuesProjekt(kundeId, form.kunde.trim(), form.projektTitelEingabe.trim());
+      if (!projektId) return;
     }
 
     const baustelleFields = {
@@ -1589,6 +1597,12 @@ function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, alle
   const kundeMatches = kundeSuche.trim()
     ? alleKunden.filter((k) => k.name.toLowerCase().includes(kundeSuche.trim().toLowerCase()))
     : alleKunden;
+  const [projektAendernOffen, setProjektAendernOffen] = useState(false);
+  const [projektSuche, setProjektSuche] = useState("");
+  const [projektDropdownOpen, setProjektDropdownOpen] = useState(false);
+  const projektMatches = projektSuche.trim()
+    ? alleProjekte.filter((p) => p.titel.toLowerCase().includes(projektSuche.trim().toLowerCase()) || formatProjektNummer(p).toLowerCase().includes(projektSuche.trim().toLowerCase()))
+    : alleProjekte;
 
   const handleSave = () => {
     const projektHatWochenende = enthaeltWochenende(form.beginn, form.ende);
@@ -1610,19 +1624,97 @@ function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, alle
 
         <Field label="Projekt">
           {form.id ? (
-            (() => {
-              const projekt = alleProjekte.find((p) => p.id === form.projektId);
-              return projekt ? (
-                <div style={{ fontSize: 13.5, fontWeight: 700, color: COLORS.textDark }}>
-                  {formatProjektNummer(projekt)} — {projekt.titel}
-                  {projekt.status === "abgeschlossen" && (
-                    <span style={{ marginLeft: 8, fontSize: 10.5, fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase" }}>Abgeschlossen</span>
-                  )}
-                </div>
-              ) : (
-                <div style={{ fontSize: 12.5, color: COLORS.textMuted, fontStyle: "italic" }}>Kein Projekt zugeordnet</div>
-              );
-            })()
+            projektAendernOffen ? (
+              <div style={{ position: "relative" }}>
+                <input
+                  style={inputStyle} value={form.projektTitelEingabe}
+                  autoFocus
+                  onChange={(e) => {
+                    setForm({ ...form, projektTitelEingabe: e.target.value, projektId: null });
+                    setProjektSuche(e.target.value);
+                    setProjektDropdownOpen(true);
+                  }}
+                  onFocus={() => { setProjektSuche(form.projektTitelEingabe); setProjektDropdownOpen(true); }}
+                  onBlur={() => setTimeout(() => setProjektDropdownOpen(false), 150)}
+                  placeholder="Projekt suchen oder neuen Titel eingeben"
+                />
+                {form.projektId && (
+                  <div style={{ fontSize: 10.5, color: COLORS.brandGreen, fontWeight: 700, marginTop: 4 }}>
+                    ✓ Wird mit bestehendem Projekt verknüpft (Kunde wird übernommen)
+                  </div>
+                )}
+                {!form.projektId && form.projektTitelEingabe.trim() && (
+                  <div style={{ fontSize: 10.5, color: COLORS.textMuted, marginTop: 4 }}>
+                    Neues Projekt für {form.kunde || "diesen Kunden"} — wird beim Speichern angelegt.
+                  </div>
+                )}
+                {projektDropdownOpen && projektMatches.length > 0 && (
+                  <div style={{
+                    position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 61,
+                    background: "#fff", borderRadius: 10, border: `1px solid ${COLORS.border}`,
+                    boxShadow: "0 8px 24px rgba(0,0,0,0.14)", padding: 6, maxHeight: 200, overflowY: "auto",
+                  }}>
+                    {projektMatches.map((p) => (
+                      <button
+                        key={p.id}
+                        onMouseDown={() => {
+                          const kunde = alleKunden.find((k) => k.id === p.kundeId);
+                          setForm((f) => ({
+                            ...f,
+                            projektId: p.id,
+                            projektTitelEingabe: p.titel,
+                            ...(kunde ? { kundeId: kunde.id, kunde: kunde.name, kontaktName: kunde.kontaktName, kontaktTelefon: kunde.kontaktTelefon, strasse: kunde.strasse, plz: kunde.plz, stadt: kunde.stadt } : {}),
+                          }));
+                          setProjektDropdownOpen(false);
+                        }}
+                        style={{
+                          display: "block", width: "100%", textAlign: "left", padding: "8px 10px", borderRadius: 7,
+                          border: "none", background: "transparent", cursor: "pointer", fontSize: 13, color: COLORS.textDark,
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = "#F6F5F2")}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                      >
+                        <div style={{ fontWeight: 700 }}>{formatProjektNummer(p)} — {p.titel}</div>
+                        <div style={{ fontSize: 10.5, color: COLORS.textMuted }}>
+                          {alleKunden.find((k) => k.id === p.kundeId)?.name || "—"}
+                          {p.status === "abgeschlossen" ? " · Abgeschlossen" : ""}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <button
+                  onClick={() => setProjektAendernOffen(false)}
+                  style={{ border: "none", background: "none", color: COLORS.textMuted, fontSize: 11, textDecoration: "underline", cursor: "pointer", padding: 0, marginTop: 6 }}
+                >
+                  Abbrechen
+                </button>
+              </div>
+            ) : (
+              (() => {
+                const projekt = alleProjekte.find((p) => p.id === form.projektId);
+                return (
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    {projekt ? (
+                      <div style={{ fontSize: 13.5, fontWeight: 700, color: COLORS.textDark }}>
+                        {formatProjektNummer(projekt)} — {projekt.titel}
+                        {projekt.status === "abgeschlossen" && (
+                          <span style={{ marginLeft: 8, fontSize: 10.5, fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase" }}>Abgeschlossen</span>
+                        )}
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 12.5, color: COLORS.textMuted, fontStyle: "italic" }}>Kein Projekt zugeordnet</div>
+                    )}
+                    <button
+                      onClick={() => { setProjektAendernOffen(true); setProjektSuche(""); }}
+                      style={{ border: "none", background: "none", color: COLORS.accent, fontSize: 11.5, fontWeight: 700, textDecoration: "underline", cursor: "pointer", padding: 0 }}
+                    >
+                      Projekt ändern
+                    </button>
+                  </div>
+                );
+              })()
+            )
           ) : (
             <div style={{ fontSize: 11.5, color: COLORS.textMuted, background: "#F6F5F2", borderRadius: 8, padding: "9px 11px" }}>
               Wird beim Speichern automatisch bestimmt: neues Projekt, oder Zuordnung zu einem aktiven Projekt des Kunden.
