@@ -113,16 +113,25 @@ function enthaeltWochenende(beginn, ende) {
   }
   return false;
 }
-const STANDARD_TAGESKAPAZITAET = 8; // heures par jour, hypothèse standard sans autre indication
+const ARBEITSTAG_START = "08:00";
+const ARBEITSTAG_ENDE = "17:00";
+const ARBEITSTAG_ENDE_EINZELTAG = "19:00"; // tolérance si le Termin ne dure qu'un einziger Tag
+const STANDARD_TAGESKAPAZITAET = 8; // 08:00–17:00, moins 1h de pause déjeuner
 
 // Nombre d'heures que représente un Termin pour UNE journée : basé sur
-// l'heure de début/fin si précisée, sinon on suppose une journée pleine.
+// l'heure de début/fin si précisée. Recadré sur 08:00–17:00, sauf si le
+// Termin ne dure qu'un seul jour, auquel cas un dépassement le soir est
+// toléré jusqu'à 19:00. Sinon (Termin sur plusieurs jours), toujours 17:00.
 function stundenProTag(baustelle) {
   if (baustelle.startzeit && baustelle.endzeit) {
-    const [sh, sm] = baustelle.startzeit.split(":").map(Number);
-    const [eh, em] = baustelle.endzeit.split(":").map(Number);
+    const istEinzelTag = baustelle.beginn === baustelle.ende;
+    const endeGrenze = istEinzelTag ? ARBEITSTAG_ENDE_EINZELTAG : ARBEITSTAG_ENDE;
+    const start = baustelle.startzeit < ARBEITSTAG_START ? ARBEITSTAG_START : baustelle.startzeit;
+    const ende = baustelle.endzeit > endeGrenze ? endeGrenze : baustelle.endzeit;
+    const [sh, sm] = start.split(":").map(Number);
+    const [eh, em] = ende.split(":").map(Number);
     let h = eh + em / 60 - (sh + sm / 60);
-    if (h <= 0) h += 24;
+    if (h <= 0) h = STANDARD_TAGESKAPAZITAET; // horaire incohérent après recadrage → journée complète par défaut
     return Math.round(h * 4) / 4; // arrondi au quart d'heure
   }
   return STANDARD_TAGESKAPAZITAET;
