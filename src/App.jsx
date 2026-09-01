@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Plus, X, MapPin, User, ChevronLeft, ChevronRight, Trash2, Users, LogOut, ShieldCheck, Calendar as CalendarIcon, Mail, Phone, Home, Send, Menu as MenuIcon, Clock, ClipboardList, Building2, Search } from "lucide-react";
+import { Plus, X, MapPin, User, ChevronLeft, ChevronRight, Trash2, Users, LogOut, ShieldCheck, Calendar as CalendarIcon, Mail, Phone, Home, Send, Menu as MenuIcon, Clock, ClipboardList, Building2, Search, FileText, Download } from "lucide-react";
+import { jsPDF } from "jspdf";
+import autoTable from "jspdf-autotable";
 import { supabase } from "./supabaseClient";
 
 const COLORS = {
@@ -178,6 +180,49 @@ function kapazitaetFuerMitarbeiter(mitarbeiterId, periodeBeginn, periodeEnde, ab
     }
   }
   return { kapazitaet: kap, abwesendeTage };
+}
+function formatDatumDE(ds) {
+  if (!ds) return "";
+  const [y, m, d] = ds.split("-");
+  return `${d}.${m}.${y}`;
+}
+// Détail des chantiers/tâches d'un employé pour UN jour donné (équivalent
+// des colonnes Kunde/Leistung/Std.H. de la fiche hebdomadaire papier).
+function eintraegeFuerTag(mitarbeiterId, ds, baustellen) {
+  const dateObj = new Date(ds + "T00:00:00");
+  const eintraege = [];
+  for (const b of baustellen) {
+    const z = (b.zuweisungen || []).find((zz) => zz.mitarbeiterId === mitarbeiterId);
+    if (z && isZuweisungAktivAm(z, dateObj)) {
+      eintraege.push({ baustelleId: b.id, kunde: b.kunde, leistung: b.beschreibung || "", startzeit: b.startzeit || "", endzeit: b.endzeit || "" });
+    }
+  }
+  return eintraege;
+}
+// Ligne pré-remplie pour la fiche légale (§17 MiLoG) d'un jour donné :
+// Beginn/Ende = plage couvrant tous les chantiers du jour, Pause fixe de
+// 60 min les jours travaillés, Dauer = durée nette calculée.
+function berechneStundennachweisTag(mitarbeiterId, ds, baustellen, abwesenheiten) {
+  const abwesenheit = (abwesenheiten || []).find((a) => a.mitarbeiterId === mitarbeiterId && a.beginn <= ds && ds <= a.ende);
+  const eintraege = eintraegeFuerTag(mitarbeiterId, ds, baustellen);
+  if (abwesenheit || eintraege.length === 0) {
+    return { datum: ds, arbeitstag: false, beginn: "", ende: "", pauseMin: 0, dauerStd: 0, aufzeichnungsDatum: "", eintraege, abwesenheit: abwesenheit || null };
+  }
+  const mitZeiten = eintraege.filter((e) => e.startzeit && e.endzeit);
+  const beginn = mitZeiten.length ? mitZeiten.reduce((min, e) => (e.startzeit < min ? e.startzeit : min), mitZeiten[0].startzeit) : ARBEITSTAG_START;
+  const ende = mitZeiten.length ? mitZeiten.reduce((max, e) => (e.endzeit > max ? e.endzeit : max), mitZeiten[0].endzeit) : ARBEITSTAG_ENDE;
+  const pauseMin = 60;
+  const [bh, bm] = beginn.split(":").map(Number);
+  const [eh, em] = ende.split(":").map(Number);
+  let dauerStd = eh + em / 60 - (bh + bm / 60) - pauseMin / 60;
+  if (dauerStd < 0) dauerStd = 0;
+  dauerStd = Math.round(dauerStd * 4) / 4;
+  return { datum: ds, arbeitstag: true, beginn, ende, pauseMin, dauerStd, aufzeichnungsDatum: "", eintraege, abwesenheit: null };
+}
+function berechneStundennachweisMonat(mitarbeiterId, jahr, monat, baustellen, abwesenheiten) {
+  const beginn = fmt(new Date(jahr, monat, 1));
+  const ende = fmt(new Date(jahr, monat + 1, 0));
+  return alleTageZwischen(beginn, ende).map((ds) => berechneStundennachweisTag(mitarbeiterId, ds, baustellen, abwesenheiten));
 }
 // Heures déjà réservées pour un employé sur une période donnée, en sommant
 // chaque jour où son affectation est active.
@@ -2666,7 +2711,7 @@ function RessourcenPage({ baustellen, mitarbeiter, abwesenheiten, isAdmin, curre
 
       <div style={{ padding: "16px 22px 0" }}>
         <div style={{ display: "flex", background: COLORS.bgMain, borderRadius: 8, padding: 3, gap: 2, width: "fit-content", flexWrap: "wrap" }}>
-          {[["verfuegbarkeit", "Verfügbarkeit prüfen"], ["stunden", "Stunden-Übersicht"], ["abwesenheiten", "Abwesenheiten"]].map(([v, label]) => (
+          {[["verfuegbarkeit", "Verfügbarkeit prüfen"], ["stunden", "Stunden-Übersicht"], ["abwesenheiten", "Abwesenheiten"], ["stundennachweis", "Stundennachweis"]].map(([v, label]) => (
             <button
               key={v}
               onClick={() => setModus(v)}
@@ -2699,6 +2744,15 @@ function RessourcenPage({ baustellen, mitarbeiter, abwesenheiten, isAdmin, curre
             currentUserId={currentUserId}
             onAdd={onAddAbwesenheit}
             onRemove={onRemoveAbwesenheit}
+          />
+        )}
+        {modus === "stundennachweis" && (
+          <StundennachweisPage
+            mitarbeiter={mitarbeiter}
+            baustellen={baustellen}
+            abwesenheiten={abwesenheiten}
+            isAdmin={isAdmin}
+            currentUserId={currentUserId}
           />
         )}
       </div>
@@ -3008,6 +3062,230 @@ function AbwesenheitenPage({ mitarbeiter, abwesenheiten, isAdmin, currentUserId,
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, isAdmin, currentUserId }) {
+  const heute = new Date();
+  const [mitarbeiterId, setMitarbeiterId] = useState(isAdmin ? (mitarbeiter[0]?.id || "") : currentUserId || "");
+  const [jahr, setJahr] = useState(heute.getFullYear());
+  const [monat, setMonat] = useState(heute.getMonth()); // 0-11
+  const [tage, setTage] = useState([]);
+  const [arbeitgeber, setArbeitgeber] = useState("Elektro Schmidtke GmbH");
+  const [arbeitnehmer, setArbeitnehmer] = useState("");
+  const [aufgeklapptTag, setAufgeklapptTag] = useState(null);
+
+  const sichtbareMitarbeiter = isAdmin ? mitarbeiter : mitarbeiter.filter((m) => m.id === currentUserId);
+  const person = mitarbeiter.find((m) => m.id === mitarbeiterId);
+
+  const neuBerechnen = () => {
+    if (!mitarbeiterId) return;
+    setTage(berechneStundennachweisMonat(mitarbeiterId, jahr, monat, baustellen, abwesenheiten));
+    setArbeitnehmer(mitarbeiter.find((m) => m.id === mitarbeiterId)?.name || "");
+  };
+
+  useEffect(() => {
+    neuBerechnen();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mitarbeiterId, jahr, monat]);
+
+  const monatLabel = new Date(jahr, monat, 1).toLocaleDateString("de-DE", { month: "long", year: "numeric" });
+  const gehePrev = () => { const d = new Date(jahr, monat - 1, 1); setJahr(d.getFullYear()); setMonat(d.getMonth()); };
+  const geheNext = () => { const d = new Date(jahr, monat + 1, 1); setJahr(d.getFullYear()); setMonat(d.getMonth()); };
+
+  const updateTag = (idx, fields) => {
+    setTage((t) => t.map((row, i) => {
+      if (i !== idx) return row;
+      const updated = { ...row, ...fields };
+      if (updated.arbeitstag && updated.beginn && updated.ende) {
+        const [bh, bm] = updated.beginn.split(":").map(Number);
+        const [eh, em] = updated.ende.split(":").map(Number);
+        let dauerStd = eh + em / 60 - (bh + bm / 60) - (updated.pauseMin || 0) / 60;
+        if (dauerStd < 0) dauerStd = 0;
+        updated.dauerStd = Math.round(dauerStd * 4) / 4;
+      }
+      return updated;
+    }));
+  };
+  const toggleArbeitstag = (idx) => {
+    setTage((t) => t.map((row, i) => {
+      if (i !== idx) return row;
+      if (row.arbeitstag) return { ...row, arbeitstag: false, beginn: "", ende: "", pauseMin: 0, dauerStd: 0 };
+      return { ...row, arbeitstag: true, beginn: row.beginn || ARBEITSTAG_START, ende: row.ende || ARBEITSTAG_ENDE, pauseMin: 60, dauerStd: STANDARD_TAGESKAPAZITAET };
+    }));
+  };
+  const alleAufzeichnungsdatenSetzen = () => {
+    const heuteStr = fmt(new Date());
+    setTage((t) => t.map((row) => (row.arbeitstag ? { ...row, aufzeichnungsDatum: heuteStr } : row)));
+  };
+
+  const summe = tage.reduce((s, t) => s + (t.dauerStd || 0), 0);
+
+  const pdfErstellen = () => {
+    const doc = new jsPDF({ unit: "mm", format: "a4" });
+    const marginX = 15;
+    let y = 18;
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(12);
+    doc.text("Aufzeichnung der Arbeitszeiten gemäß § 17 Mindestlohngesetz", marginX, y);
+    y += 8;
+
+    doc.setFontSize(9);
+    doc.text("Wichtiger Hinweis:", marginX, y);
+    y += 4.5;
+    doc.setFont("helvetica", "normal");
+    const hinweis = "Die Aufzeichnungen müssen spätestens mit Ablauf des 7. Kalendertages erstellt werden, der auf den Tag der Arbeitsleistung folgt. Sie sind 2 Jahre lang aufzubewahren, beginnend ab dem Tag, den für die Aufzeichnung maßgeblichen Zeitpunkt.";
+    const hinweisZeilen = doc.splitTextToSize(hinweis, 180);
+    doc.text(hinweisZeilen, marginX, y);
+    y += hinweisZeilen.length * 4 + 5;
+
+    doc.text(`Bezeichnung des Arbeitgebers: ${arbeitgeber}`, marginX, y); y += 5;
+    doc.text(`Name, Vorname des Arbeitnehmers: ${arbeitnehmer}`, marginX, y); y += 5;
+    const monatBeginn = fmt(new Date(jahr, monat, 1));
+    const monatEnde = fmt(new Date(jahr, monat + 1, 0));
+    doc.text(`Aufzeichnung für die Zeit vom: ${formatDatumDE(monatBeginn)} bis zum ${formatDatumDE(monatEnde)}`, marginX, y);
+    y += 7;
+
+    autoTable(doc, {
+      startY: y,
+      margin: { left: marginX, right: marginX },
+      head: [["Datum der\nArbeitsleistung", "Uhrzeit Beginn\nder Arbeitsleistung", "Uhrzeit Ende\nder Arbeitsleistung", "Pause\nin Min.", "Dauer der\nArbeitsleistung (Std.)", "Datum der\nAufzeichnung"]],
+      body: tage.map((t) => t.arbeitstag
+        ? [formatDatumDE(t.datum), t.beginn, t.ende, String(t.pauseMin), String(t.dauerStd), formatDatumDE(t.aufzeichnungsDatum)]
+        : [formatDatumDE(t.datum), "----------", "----------", "", "", ""]
+      ),
+      styles: { fontSize: 8, cellPadding: 1.6, halign: "center" },
+      headStyles: { fillColor: [230, 228, 222], textColor: 20, fontStyle: "bold", fontSize: 7.5 },
+      columnStyles: { 0: { halign: "left" } },
+      theme: "grid",
+    });
+
+    let finalY = doc.lastAutoTable.finalY + 8;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10);
+    doc.text(`Summe: Std. ${summe}`, marginX, finalY);
+
+    finalY += 22;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.line(marginX, finalY, marginX + 70, finalY);
+    doc.line(marginX + 95, finalY, marginX + 165, finalY);
+    finalY += 4;
+    doc.text("(Datum/Unterschrift Arbeitnehmer)", marginX, finalY);
+    doc.text("(Datum/Unterschrift Arbeitgeber)", marginX + 95, finalY);
+
+    const dateiname = `Stundennachweis_${(arbeitnehmer || "Mitarbeiter").replace(/[,\s]+/g, "_")}_${jahr}-${String(monat + 1).padStart(2, "0")}.pdf`;
+    doc.save(dateiname);
+  };
+
+  if (!mitarbeiterId) {
+    return <div style={{ fontSize: 13, color: COLORS.textMuted }}>Kein Mitarbeiter verfügbar.</div>;
+  }
+
+  return (
+    <div style={{ maxWidth: 900 }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 14 }}>
+        {isAdmin && (
+          <Field label="Mitarbeiter" style={{ minWidth: 180 }}>
+            <select style={inputStyle} value={mitarbeiterId} onChange={(e) => setMitarbeiterId(e.target.value)}>
+              {sichtbareMitarbeiter.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </select>
+          </Field>
+        )}
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <button onClick={gehePrev} style={navBtnStyle}><ChevronLeft size={16} /></button>
+          <div style={{ fontSize: 13, fontWeight: 700, minWidth: 140, textAlign: "center", textTransform: "capitalize" }}>{monatLabel}</div>
+          <button onClick={geheNext} style={navBtnStyle}><ChevronRight size={16} /></button>
+        </div>
+        <button onClick={neuBerechnen} style={{ ...btnSecondary, fontSize: 12 }}>Neu aus Kalender berechnen</button>
+      </div>
+
+      <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+        <Field label="Bezeichnung des Arbeitgebers" style={{ flex: 1, minWidth: 220 }}>
+          <input style={inputStyle} value={arbeitgeber} onChange={(e) => setArbeitgeber(e.target.value)} />
+        </Field>
+        <Field label="Name, Vorname des Arbeitnehmers" style={{ flex: 1, minWidth: 220 }}>
+          <input style={inputStyle} value={arbeitnehmer} onChange={(e) => setArbeitnehmer(e.target.value)} placeholder="Nachname, Vorname" />
+        </Field>
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <div style={{ fontSize: 12, color: COLORS.textMuted }}>
+          Vorausgefüllt aus dem Kalender — bitte vor dem Erstellen prüfen und bei Bedarf korrigieren.
+        </div>
+        <button onClick={alleAufzeichnungsdatenSetzen} style={{ ...btnSecondary, fontSize: 11.5 }}>
+          "Datum der Aufzeichnung" überall auf heute setzen
+        </button>
+      </div>
+
+      <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "hidden", marginBottom: 16 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "34px 90px 70px 70px 60px 70px 90px 34px", gap: 0, background: "#FAFAF9", borderBottom: `1px solid ${COLORS.border}`, padding: "7px 10px", fontSize: 10.5, fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase" }}>
+          <div></div>
+          <div>Datum</div>
+          <div>Beginn</div>
+          <div>Ende</div>
+          <div>Pause</div>
+          <div>Dauer</div>
+          <div>Aufzeichnung</div>
+          <div></div>
+        </div>
+        {tage.map((t, idx) => {
+          const istWochenende = istWochenendtag(t.datum);
+          return (
+            <div key={t.datum}>
+              <div style={{
+                display: "grid", gridTemplateColumns: "34px 90px 70px 70px 60px 70px 90px 34px", gap: 0, alignItems: "center",
+                padding: "5px 10px", borderBottom: `1px solid ${COLORS.borderSoft}`, fontSize: 12.5,
+                background: istWochenende ? hexToRgba(COLORS.accent, 0.03) : "transparent",
+              }}>
+                <input type="checkbox" checked={t.arbeitstag} onChange={() => toggleArbeitstag(idx)} />
+                <div style={{ fontWeight: 600 }}>{formatDatumDE(t.datum)}</div>
+                {t.arbeitstag ? (
+                  <>
+                    <input type="time" value={t.beginn} onChange={(e) => updateTag(idx, { beginn: e.target.value })} style={{ ...inputStyle, padding: "3px 4px", fontSize: 11.5 }} />
+                    <input type="time" value={t.ende} onChange={(e) => updateTag(idx, { ende: e.target.value })} style={{ ...inputStyle, padding: "3px 4px", fontSize: 11.5 }} />
+                    <input type="number" min="0" value={t.pauseMin} onChange={(e) => updateTag(idx, { pauseMin: Number(e.target.value) })} style={{ ...inputStyle, padding: "3px 4px", fontSize: 11.5, width: 46 }} />
+                    <div style={{ fontWeight: 700 }}>{t.dauerStd} Std.</div>
+                    <input type="date" value={t.aufzeichnungsDatum} onChange={(e) => updateTag(idx, { aufzeichnungsDatum: e.target.value })} style={{ ...inputStyle, padding: "3px 2px", fontSize: 10 }} />
+                  </>
+                ) : (
+                  <div style={{ gridColumn: "span 4", color: COLORS.textMuted, fontStyle: "italic", fontSize: 11.5 }}>
+                    {t.abwesenheit ? `${ABWESENHEIT_LABEL[t.abwesenheit.typ] || t.abwesenheit.typ} — kein Arbeitstag` : "kein Arbeitstag"}
+                  </div>
+                )}
+                <button
+                  onClick={() => setAufgeklapptTag(aufgeklapptTag === t.datum ? null : t.datum)}
+                  disabled={t.eintraege.length === 0}
+                  style={{ border: "none", background: "transparent", cursor: t.eintraege.length ? "pointer" : "default", color: t.eintraege.length ? COLORS.accent : COLORS.border, fontSize: 11, fontWeight: 700 }}
+                  title="Details (Kunde/Leistung)"
+                >
+                  {t.eintraege.length > 0 ? (aufgeklapptTag === t.datum ? "▾" : "▸") : ""}
+                </button>
+              </div>
+              {aufgeklapptTag === t.datum && t.eintraege.length > 0 && (
+                <div style={{ padding: "6px 10px 10px 44px", background: "#FAFAF9", borderBottom: `1px solid ${COLORS.borderSoft}` }}>
+                  {t.eintraege.map((e, i) => (
+                    <div key={i} style={{ fontSize: 11.5, color: COLORS.textMuted, marginBottom: 2 }}>
+                      <span style={{ fontWeight: 700, color: COLORS.textDark }}>{e.kunde}</span>
+                      {e.leistung ? ` — ${e.leistung}` : ""}
+                      {e.startzeit && e.endzeit ? ` (${e.startzeit}–${e.endzeit})` : ""}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        <div style={{ padding: "10px 14px", display: "flex", justifyContent: "flex-end", fontSize: 13.5, fontWeight: 800 }}>
+          Summe: {summe} Std.
+        </div>
+      </div>
+
+      <button onClick={pdfErstellen} style={{ ...btnPrimary, display: "flex", alignItems: "center", gap: 7 }}>
+        <FileText size={16} /> PDF erstellen
+      </button>
     </div>
   );
 }
