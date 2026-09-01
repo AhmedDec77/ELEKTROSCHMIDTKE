@@ -350,6 +350,17 @@ function mapAbwesenheitRow(row) {
   };
 }
 const ABWESENHEIT_LABEL = { urlaub: "Urlaub", krankheit: "Krankheit", fortbildung: "Fortbildung" };
+function mapStundennachweisEintragRow(row) {
+  return {
+    id: row.id,
+    mitarbeiterId: row.mitarbeiter_id,
+    datum: row.datum,
+    kunde: row.kunde || "",
+    leistung: row.leistung || "",
+    stunden: Number(row.stunden) || 0,
+    aufzeichnungsDatum: row.aufzeichnungsdatum || "",
+  };
+}
 const ABWESENHEIT_FARBE = { urlaub: "#0B7285", krankheit: "#B42318", fortbildung: "#6B46C1" };
 function findeAbwesenheitenFuerZeitraum(mitarbeiterId, beginn, ende, abwesenheiten) {
   return abwesenheiten.filter((a) => a.mitarbeiterId === mitarbeiterId && rangesOverlap(a.beginn, a.ende, beginn, ende));
@@ -395,7 +406,7 @@ const EMPTY_KUNDE_FORM = { id: null, name: "", kontaktName: "", kontaktTelefon: 
 const EMPTY_PROJEKT_FORM = { id: null, titel: "", kundeId: null, kundeNameEingabe: "" };
 
 export default function Baustellenplanung() {
-  const [data, setData] = useState({ mitarbeiter: [], baustellen: [], kunden: [], projekte: [], abwesenheiten: [] });
+  const [data, setData] = useState({ mitarbeiter: [], baustellen: [], kunden: [], projekte: [], abwesenheiten: [], stundennachweis: [] });
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(null);
   const [page, setPage] = useState("kalender"); // kalender | projekte | kunden
@@ -430,13 +441,14 @@ export default function Baustellenplanung() {
           supabase.from("zuweisungen").select("*"),
           supabase.from("kunden").select("*").order("name", { ascending: true }),
           supabase.from("projekte").select("*").order("nummer", { ascending: false }),
-          supabase.from("abwesenheiten").select("*").order("beginn", { ascending: false })
+          supabase.from("abwesenheiten").select("*").order("beginn", { ascending: false }),
+          supabase.from("stundennachweis_eintraege").select("*").order("datum", { ascending: true })
         );
       }
       const results = await Promise.all(calls);
       const [{ data: mRows, error: mErr }] = results;
-      const bErrRes = results[1], zErrRes = results[2], kErrRes = results[3], pErrRes = results[4], aErrRes = results[5];
-      const anyErr = mErr || bErrRes?.error || zErrRes?.error || kErrRes?.error || pErrRes?.error || aErrRes?.error;
+      const bErrRes = results[1], zErrRes = results[2], kErrRes = results[3], pErrRes = results[4], aErrRes = results[5], sErrRes = results[6];
+      const anyErr = mErr || bErrRes?.error || zErrRes?.error || kErrRes?.error || pErrRes?.error || aErrRes?.error || sErrRes?.error;
       if (anyErr) {
         setError(`Fehler beim Laden: ${anyErr.message}`);
       } else {
@@ -448,6 +460,7 @@ export default function Baustellenplanung() {
         kunden: kErrRes ? (kErrRes.data || []).map(mapKundeRow) : [],
         projekte: pErrRes ? (pErrRes.data || []).map(mapProjektRow) : [],
         abwesenheiten: aErrRes ? (aErrRes.data || []).map(mapAbwesenheitRow) : [],
+        stundennachweis: sErrRes ? (sErrRes.data || []).map(mapStundennachweisEintragRow) : [],
       });
     } catch (e) {
       setError("Verbindung zu Supabase fehlgeschlagen. Bitte .env prüfen.");
@@ -602,6 +615,46 @@ export default function Baustellenplanung() {
     const { error: err } = await supabase.from("abwesenheiten").delete().eq("id", id);
     if (err) { setError(`Fehler beim Löschen: ${err.message}`); return; }
     setData((d) => ({ ...d, abwesenheiten: d.abwesenheiten.filter((a) => a.id !== id) }));
+  };
+
+  // Remplace intégralement les lignes sauvegardées pour un employé/mois donné
+  // (stratégie simple : on supprime tout ce qui existait pour cette période,
+  // puis on réinsère l'état actuel). Retourne true si succès.
+  const saveStundennachweis = async (mitarbeiterId, monatBeginn, monatEnde, eintraege) => {
+    const { error: delErr } = await supabase
+      .from("stundennachweis_eintraege")
+      .delete()
+      .eq("mitarbeiter_id", mitarbeiterId)
+      .gte("datum", monatBeginn)
+      .lte("datum", monatEnde);
+    if (delErr) { setError(`Fehler beim Speichern: ${delErr.message}`); return false; }
+
+    const zeilen = eintraege
+      .filter((e) => e.kunde.trim() || Number(e.stunden) > 0)
+      .map((e) => ({
+        mitarbeiter_id: mitarbeiterId,
+        datum: e.datum,
+        kunde: e.kunde.trim(),
+        leistung: e.leistung.trim(),
+        stunden: Number(e.stunden) || 0,
+        aufzeichnungsdatum: e.aufzeichnungsDatum || null,
+      }));
+
+    let inserted = [];
+    if (zeilen.length > 0) {
+      const { data: ins, error: insErr } = await supabase.from("stundennachweis_eintraege").insert(zeilen).select();
+      if (insErr) { setError(`Fehler beim Speichern: ${insErr.message}`); return false; }
+      inserted = ins;
+    }
+
+    setData((d) => ({
+      ...d,
+      stundennachweis: [
+        ...d.stundennachweis.filter((e) => !(e.mitarbeiterId === mitarbeiterId && e.datum >= monatBeginn && e.datum <= monatEnde)),
+        ...inserted.map(mapStundennachweisEintragRow),
+      ],
+    }));
+    return true;
   };
 
   // Applique les valeurs par défaut d'un client sélectionné aux champs du formulaire de chantier
@@ -1303,12 +1356,14 @@ export default function Baustellenplanung() {
             baustellen={data.baustellen}
             mitarbeiter={data.mitarbeiter}
             abwesenheiten={data.abwesenheiten}
+            stundennachweis={data.stundennachweis}
             isAdmin={isAdmin}
             currentUserId={currentUserId}
             onOpenSidebar={() => setSidebarOpen(true)}
             onBaustelleClick={openEditBaustelle}
             onAddAbwesenheit={addAbwesenheit}
             onRemoveAbwesenheit={removeAbwesenheit}
+            onSaveStundennachweis={saveStundennachweis}
             error={error}
           />
         )}
@@ -2777,7 +2832,7 @@ function KundenListPage({ kunden, baustellen, onOpenSidebar, onNew, onEdit, erro
   );
 }
 
-function RessourcenPage({ baustellen, mitarbeiter, abwesenheiten, isAdmin, currentUserId, onOpenSidebar, onBaustelleClick, onAddAbwesenheit, onRemoveAbwesenheit, error }) {
+function RessourcenPage({ baustellen, mitarbeiter, abwesenheiten, stundennachweis, isAdmin, currentUserId, onOpenSidebar, onBaustelleClick, onAddAbwesenheit, onRemoveAbwesenheit, onSaveStundennachweis, error }) {
   const [modus, setModus] = useState("verfuegbarkeit"); // verfuegbarkeit | stunden | abwesenheiten
 
   return (
@@ -2827,8 +2882,10 @@ function RessourcenPage({ baustellen, mitarbeiter, abwesenheiten, isAdmin, curre
             mitarbeiter={mitarbeiter}
             baustellen={baustellen}
             abwesenheiten={abwesenheiten}
+            stundennachweis={stundennachweis}
             isAdmin={isAdmin}
             currentUserId={currentUserId}
+            onSave={onSaveStundennachweis}
           />
         )}
       </div>
@@ -3142,7 +3199,7 @@ function AbwesenheitenPage({ mitarbeiter, abwesenheiten, isAdmin, currentUserId,
   );
 }
 
-function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, isAdmin, currentUserId }) {
+function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundennachweis, isAdmin, currentUserId, onSave }) {
   const heute = new Date();
   const [mitarbeiterId, setMitarbeiterId] = useState(isAdmin ? (mitarbeiter[0]?.id || "") : currentUserId || "");
   const [jahr, setJahr] = useState(heute.getFullYear());
@@ -3151,10 +3208,13 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, isAdmin, 
   const [aufzeichnungsDaten, setAufzeichnungsDaten] = useState({}); // { "YYYY-MM-DD": "YYYY-MM-DD" }
   const [arbeitgeber, setArbeitgeber] = useState("Elektro Schmidtke GmbH");
   const [arbeitnehmer, setArbeitnehmer] = useState("");
+  const [geladenAus, setGeladenAus] = useState(null); // "gespeichert" | "kalender" | null
+  const [speichertGerade, setSpeichertGerade] = useState(false);
+  const [gespeichertHinweis, setGespeichertHinweis] = useState(false);
 
   const sichtbareMitarbeiter = isAdmin ? mitarbeiter : mitarbeiter.filter((m) => m.id === currentUserId);
 
-  const neuBerechnen = () => {
+  const berechneAusKalender = () => {
     if (!mitarbeiterId) return;
     const monatBeginn = fmt(new Date(jahr, monat, 1));
     const monatEnde = fmt(new Date(jahr, monat + 1, 0));
@@ -3194,22 +3254,58 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, isAdmin, 
     }
     setEintraege(neu);
     setAufzeichnungsDaten({});
+    setGeladenAus("kalender");
+  };
+
+  const ladeGespeichertOderBerechne = () => {
+    if (!mitarbeiterId) return;
     const p = mitarbeiter.find((m) => m.id === mitarbeiterId);
     setArbeitnehmer(p ? (p.nachname ? `${p.nachname}, ${p.name}` : p.name) : "");
+    const monatBeginn = fmt(new Date(jahr, monat, 1));
+    const monatEnde = fmt(new Date(jahr, monat + 1, 0));
+    const gespeicherte = (stundennachweis || []).filter((e) => e.mitarbeiterId === mitarbeiterId && e.datum >= monatBeginn && e.datum <= monatEnde);
+    if (gespeicherte.length > 0) {
+      setEintraege(gespeicherte.map((e) => ({ id: e.id, datum: e.datum, kunde: e.kunde, leistung: e.leistung, stunden: e.stunden })));
+      const daten = {};
+      gespeicherte.forEach((e) => { if (e.aufzeichnungsDatum && !daten[e.datum]) daten[e.datum] = e.aufzeichnungsDatum; });
+      setAufzeichnungsDaten(daten);
+      setGeladenAus("gespeichert");
+    } else {
+      berechneAusKalender();
+    }
   };
 
   useEffect(() => {
-    neuBerechnen();
+    ladeGespeichertOderBerechne();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mitarbeiterId, jahr, monat]);
 
-  const monatLabel = new Date(jahr, monat, 1).toLocaleDateString("de-DE", { month: "long", year: "numeric" });
-  const gehePrev = () => { const d = new Date(jahr, monat - 1, 1); setJahr(d.getFullYear()); setMonat(d.getMonth()); };
-  const geheNext = () => { const d = new Date(jahr, monat + 1, 1); setJahr(d.getFullYear()); setMonat(d.getMonth()); };
+  const speichern = async () => {
+    if (!mitarbeiterId) return;
+    setSpeichertGerade(true);
+    const monatBeginn = fmt(new Date(jahr, monat, 1));
+    const monatEnde = fmt(new Date(jahr, monat + 1, 0));
+    const mitAufzeichnung = eintraege.map((e) => ({ ...e, aufzeichnungsDatum: aufzeichnungsDaten[e.datum] || "" }));
+    const ok = await onSave(mitarbeiterId, monatBeginn, monatEnde, mitAufzeichnung);
+    setSpeichertGerade(false);
+    if (ok) {
+      setGeladenAus("gespeichert");
+      setGespeichertHinweis(true);
+      setTimeout(() => setGespeichertHinweis(false), 2000);
+    }
+  };
 
-  const updateEintrag = (id, fields) => setEintraege((e) => e.map((x) => (x.id === id ? { ...x, ...fields } : x)));
-  const removeEintrag = (id) => setEintraege((e) => e.filter((x) => x.id !== id));
-  const addEintrag = (datum) => setEintraege((e) => [...e, { id: `neu-${Date.now()}-${Math.random()}`, datum, kunde: "", leistung: "", stunden: 0 }]);
+  const monatLabel = new Date(jahr, monat, 1).toLocaleDateString("de-DE", { month: "long", year: "numeric" });
+  const konfirmiertWechsel = () => {
+    if (eintraege.length === 0 || geladenAus === "gespeichert") return true;
+    return window.confirm("Nicht gespeicherte Änderungen im Wochendetail gehen dabei verloren. Trotzdem wechseln?");
+  };
+  const gehePrev = () => { if (!konfirmiertWechsel()) return; const d = new Date(jahr, monat - 1, 1); setJahr(d.getFullYear()); setMonat(d.getMonth()); };
+  const geheNext = () => { if (!konfirmiertWechsel()) return; const d = new Date(jahr, monat + 1, 1); setJahr(d.getFullYear()); setMonat(d.getMonth()); };
+
+  const updateEintrag = (id, fields) => { setEintraege((e) => e.map((x) => (x.id === id ? { ...x, ...fields } : x))); setGeladenAus((g) => (g === "gespeichert" ? "bearbeitet" : g)); };
+  const removeEintrag = (id) => { setEintraege((e) => e.filter((x) => x.id !== id)); setGeladenAus((g) => (g === "gespeichert" ? "bearbeitet" : g)); };
+  const addEintrag = (datum) => { setEintraege((e) => [...e, { id: `neu-${Date.now()}-${Math.random()}`, datum, kunde: "", leistung: "", stunden: 0 }]); setGeladenAus((g) => (g === "gespeichert" ? "bearbeitet" : g)); };
 
   // --- Regroupement par semaine pour l'affichage/édition (source unique) ---
   const wochenGruppen = (() => {
@@ -3251,6 +3347,7 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, isAdmin, 
     const neu = {};
     tage.forEach((t) => { if (t.arbeitstag) neu[t.datum] = heuteStr; });
     setAufzeichnungsDaten(neu);
+    setGeladenAus((g) => (g === "gespeichert" ? "bearbeitet" : g));
   };
 
   const excelExportieren = () => {
@@ -3360,7 +3457,10 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, isAdmin, 
       <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 14 }}>
         {isAdmin && (
           <Field label="Mitarbeiter" style={{ minWidth: 180 }}>
-            <select style={inputStyle} value={mitarbeiterId} onChange={(e) => setMitarbeiterId(e.target.value)}>
+            <select
+              style={inputStyle} value={mitarbeiterId}
+              onChange={(e) => { if (!konfirmiertWechsel()) return; setMitarbeiterId(e.target.value); }}
+            >
               {sichtbareMitarbeiter.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
             </select>
           </Field>
@@ -3370,7 +3470,23 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, isAdmin, 
           <div style={{ fontSize: 13, fontWeight: 700, minWidth: 140, textAlign: "center", textTransform: "capitalize" }}>{monatLabel}</div>
           <button onClick={geheNext} style={navBtnStyle}><ChevronRight size={16} /></button>
         </div>
-        <button onClick={neuBerechnen} style={{ ...btnSecondary, fontSize: 12 }}>Neu aus Kalender berechnen (verwirft Änderungen)</button>
+        <button
+          onClick={() => {
+            if (eintraege.length === 0 || geladenAus === "gespeichert" || window.confirm("Nicht gespeicherte Änderungen im Wochendetail gehen dabei verloren. Wirklich neu aus dem Kalender berechnen?")) {
+              berechneAusKalender();
+            }
+          }}
+          style={{ ...btnSecondary, fontSize: 12 }}
+        >
+          Neu aus Kalender berechnen
+        </button>
+        <div style={{ flex: 1 }} />
+        <div style={{ fontSize: 11.5, color: geladenAus === "gespeichert" ? COLORS.brandGreen : "#B45309", fontWeight: 700 }}>
+          {gespeichertHinweis ? "✓ Gespeichert" : geladenAus === "gespeichert" ? "Gespeicherter Stand" : eintraege.length > 0 ? "● Nicht gespeichert" : ""}
+        </div>
+        <button onClick={speichern} disabled={speichertGerade || !mitarbeiterId} style={{ ...btnPrimary, fontSize: 12.5, opacity: speichertGerade ? 0.6 : 1 }}>
+          {speichertGerade ? "…" : "Speichern"}
+        </button>
       </div>
 
       <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
@@ -3481,7 +3597,7 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, isAdmin, 
                   <div style={{ fontWeight: 700 }}>{t.dauerStd} Std.</div>
                   <input
                     type="date" value={aufzeichnungsDaten[t.datum] || ""}
-                    onChange={(e) => setAufzeichnungsDaten((d) => ({ ...d, [t.datum]: e.target.value }))}
+                    onChange={(e) => { setAufzeichnungsDaten((d) => ({ ...d, [t.datum]: e.target.value })); setGeladenAus((g) => (g === "gespeichert" ? "bearbeitet" : g)); }}
                     style={{ ...inputStyle, padding: "3px 4px", fontSize: 10.5 }}
                   />
                 </>
