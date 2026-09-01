@@ -77,7 +77,11 @@ function isSameDay(a, b) {
 }
 function isActiveOn(baustelle, date) {
   const ds = fmt(date);
-  return baustelle.beginn <= ds && ds <= baustelle.ende;
+  if (ds < baustelle.beginn || ds > baustelle.ende) return false;
+  const tag = date.getDay();
+  if (tag === 6 && baustelle.samstagAktiv === false) return false; // Samstag explizit ausgeschlossen
+  if (tag === 0 && baustelle.sonntagAktiv === false) return false; // Sonntag explizit ausgeschlossen
+  return true;
 }
 function isZuweisungAktivAm(zuweisung, date) {
   const ds = fmt(date);
@@ -151,10 +155,11 @@ function periodenGrenzen(zeitraum, datum) {
 }
 // Heures déjà réservées pour un employé sur une période donnée, en sommant
 // chaque jour où son affectation est active.
-function stundenGebuchtFuerPeriode(mitarbeiterId, periodeBeginn, periodeEnde, baustellen) {
+function stundenGebuchtFuerPeriode(mitarbeiterId, periodeBeginn, periodeEnde, baustellen, wochenendeEinschliessen = true) {
   let summe = 0;
   const relevante = baustellen.filter((b) => (b.zuweisungen || []).some((z) => z.mitarbeiterId === mitarbeiterId));
   for (const tag of alleTageZwischen(periodeBeginn, periodeEnde)) {
+    if (!wochenendeEinschliessen && istWochenendtag(tag)) continue;
     for (const b of relevante) {
       const z = (b.zuweisungen || []).find((zz) => zz.mitarbeiterId === mitarbeiterId);
       if (z && isZuweisungAktivAm(z, new Date(tag + "T00:00:00"))) {
@@ -166,18 +171,20 @@ function stundenGebuchtFuerPeriode(mitarbeiterId, periodeBeginn, periodeEnde, ba
 }
 // Vérifie si un employé est libre sur [von, bis] (dates) et, si précisé,
 // sur le créneau horaire [uhrzeitVon, uhrzeitBis]. Retourne les conflits trouvés.
-function findeKonflikteFuerVerfuegbarkeit(mitarbeiterId, von, bis, uhrzeitVon, uhrzeitBis, baustellen) {
-  const konflikte = [];
-  for (const b of baustellen) {
-    const z = (b.zuweisungen || []).find((zz) => zz.mitarbeiterId === mitarbeiterId);
-    if (!z) continue;
-    if (!rangesOverlap(z.beginn, z.ende, von, bis)) continue;
-    if (uhrzeitVon && uhrzeitBis && b.startzeit && b.endzeit) {
-      if (!zeitenUeberlappen(uhrzeitVon, uhrzeitBis, b.startzeit, b.endzeit)) continue;
+function findeKonflikteFuerVerfuegbarkeit(mitarbeiterId, von, bis, uhrzeitVon, uhrzeitBis, baustellen, wochenendeEinschliessen = true) {
+  const gefunden = new Map(); // baustelle.id -> baustelle, pour éviter les doublons
+  for (const tag of alleTageZwischen(von, bis)) {
+    if (!wochenendeEinschliessen && istWochenendtag(tag)) continue;
+    for (const b of baustellen) {
+      const z = (b.zuweisungen || []).find((zz) => zz.mitarbeiterId === mitarbeiterId);
+      if (!z || !isZuweisungAktivAm(z, new Date(tag + "T00:00:00"))) continue;
+      if (uhrzeitVon && uhrzeitBis && b.startzeit && b.endzeit) {
+        if (!zeitenUeberlappen(uhrzeitVon, uhrzeitBis, b.startzeit, b.endzeit)) continue;
+      }
+      gefunden.set(b.id, b);
     }
-    konflikte.push(b);
   }
-  return konflikte;
+  return Array.from(gefunden.values());
 }
 // Compatibilité avec les anciennes données (mitarbeiterIds sans dates propres)
 function normalizeBaustelle(b) {
@@ -215,6 +222,8 @@ function mapBaustelleRow(row, zuweisungenRows) {
     stadt: row.stadt || "",
     beginn: row.beginn,
     ende: row.ende,
+    samstagAktiv: row.samstag_aktiv !== false,
+    sonntagAktiv: row.sonntag_aktiv !== false,
     startzeit: row.startzeit ? row.startzeit.slice(0, 5) : "",
     endzeit: row.endzeit ? row.endzeit.slice(0, 5) : "",
     zuweisungen: (zuweisungenRows || [])
@@ -273,6 +282,8 @@ const EMPTY_FORM = {
   stadt: "",
   beginn: fmt(new Date()),
   ende: fmt(new Date()),
+  samstagAktiv: false,
+  sonntagAktiv: false,
   startzeit: "",
   endzeit: "",
   zuweisungen: [], // [{ mitarbeiterId, beginn, ende }]
@@ -698,6 +709,8 @@ export default function Baustellenplanung() {
       stadt: form.stadt.trim(),
       beginn: form.beginn,
       ende: form.ende,
+      samstag_aktiv: form.samstagAktiv,
+      sonntag_aktiv: form.sonntagAktiv,
       startzeit: form.startzeit || null,
       endzeit: form.endzeit || null,
     };
@@ -739,6 +752,8 @@ export default function Baustellenplanung() {
       stadt: baustelleFields.stadt,
       beginn: baustelleFields.beginn,
       ende: baustelleFields.ende,
+      samstagAktiv: baustelleFields.samstag_aktiv,
+      sonntagAktiv: baustelleFields.sonntag_aktiv,
       startzeit: form.startzeit || "",
       endzeit: form.endzeit || "",
       zuweisungen: form.zuweisungen,
@@ -1686,9 +1701,9 @@ function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, alle
     : alleProjekte;
 
   const handleSave = () => {
-    const projektHatWochenende = enthaeltWochenende(form.beginn, form.ende);
+    const projektHatAktivesWochenende = enthaeltWochenende(form.beginn, form.ende) && (form.samstagAktiv || form.sonntagAktiv);
     const zuweisungHatWochenende = form.zuweisungen.some((z) => enthaeltWochenende(z.beginn, z.ende));
-    if (projektHatWochenende || zuweisungHatWochenende) {
+    if (projektHatAktivesWochenende || zuweisungHatWochenende) {
       const ok = window.confirm("Dieser Zeitraum umfasst ein Wochenende (Samstag und/oder Sonntag). Trotzdem speichern?");
       if (!ok) return;
     }
@@ -1914,6 +1929,21 @@ function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, alle
         <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: -6, marginBottom: 12 }}>
           Jeder Mitarbeiter kann einen eigenen Zeitraum haben, aber nur innerhalb der Termindauer.
         </div>
+        {enthaeltWochenende(form.beginn, form.ende) && (
+          <div style={{ display: "flex", gap: 16, marginTop: -4, marginBottom: 14, background: "#FFF7ED", border: "1px solid #FDE1B8", borderRadius: 8, padding: "9px 12px" }}>
+            <div style={{ fontSize: 11, color: "#B45309", fontWeight: 700, flexShrink: 0, alignSelf: "center" }}>
+              Zeitraum überbrückt ein Wochenende:
+            </div>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: COLORS.textDark, fontWeight: 600 }}>
+              <input type="checkbox" checked={form.samstagAktiv} onChange={(e) => setForm({ ...form, samstagAktiv: e.target.checked })} />
+              Samstag einschließen
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: COLORS.textDark, fontWeight: 600 }}>
+              <input type="checkbox" checked={form.sonntagAktiv} onChange={(e) => setForm({ ...form, sonntagAktiv: e.target.checked })} />
+              Sonntag einschließen
+            </label>
+          </div>
+        )}
         <div style={{ display: "flex", gap: 10 }}>
           <Field label="Uhrzeit von (optional)" style={{ flex: 1 }}>
             <input
@@ -2567,10 +2597,11 @@ function VerfuegbarkeitPruefen({ baustellen, mitarbeiter, onBaustelleClick }) {
   const [bis, setBis] = useState(heute);
   const [uhrzeitVon, setUhrzeitVon] = useState("");
   const [uhrzeitBis, setUhrzeitBis] = useState("");
+  const [wochenendeEinschliessen, setWochenendeEinschliessen] = useState(true);
   const [geprueft, setGeprueft] = useState(false);
 
   const ergebnisse = mitarbeiter.map((m) => {
-    const konflikte = findeKonflikteFuerVerfuegbarkeit(m.id, von, bis, uhrzeitVon, uhrzeitBis, baustellen);
+    const konflikte = findeKonflikteFuerVerfuegbarkeit(m.id, von, bis, uhrzeitVon, uhrzeitBis, baustellen, wochenendeEinschliessen);
     return { mitarbeiter: m, frei: konflikte.length === 0, konflikte };
   });
   const freie = ergebnisse.filter((e) => e.frei);
@@ -2595,6 +2626,10 @@ function VerfuegbarkeitPruefen({ baustellen, mitarbeiter, onBaustelleClick }) {
             <input type="time" style={inputStyle} value={uhrzeitBis} onChange={(e) => { setUhrzeitBis(e.target.value); setGeprueft(false); }} />
           </Field>
         </div>
+        <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, color: COLORS.textMuted, marginTop: 10, marginBottom: 4 }}>
+          <input type="checkbox" checked={wochenendeEinschliessen} onChange={(e) => { setWochenendeEinschliessen(e.target.checked); setGeprueft(false); }} />
+          Wochenenden (Sa/So) einbeziehen
+        </label>
         <button onClick={() => setGeprueft(true)} style={{ ...btnPrimary, width: "100%", marginTop: 4 }}>
           Verfügbarkeit prüfen
         </button>
@@ -2657,9 +2692,10 @@ function VerfuegbarkeitPruefen({ baustellen, mitarbeiter, onBaustelleClick }) {
 function StundenUebersicht({ baustellen, mitarbeiter }) {
   const [zeitraum, setZeitraum] = useState("woche"); // tag | woche | monat
   const [anker, setAnker] = useState(new Date());
+  const [wochenendeEinschliessen, setWochenendeEinschliessen] = useState(true);
 
   const { beginn, ende } = periodenGrenzen(zeitraum, anker);
-  const anzahlTage = alleTageZwischen(beginn, ende).length;
+  const anzahlTage = alleTageZwischen(beginn, ende).filter((t) => wochenendeEinschliessen || !istWochenendtag(t)).length;
   const kapazitaetGesamt = anzahlTage * STANDARD_TAGESKAPAZITAET;
 
   const gehePrev = () => setAnker((d) => (zeitraum === "tag" ? addDays(d, -1) : zeitraum === "woche" ? addDays(d, -7) : new Date(d.getFullYear(), d.getMonth() - 1, 1)));
@@ -2670,7 +2706,7 @@ function StundenUebersicht({ baustellen, mitarbeiter }) {
     : `${beginn} – ${ende}`;
 
   const zeilen = mitarbeiter.map((m) => {
-    const gebucht = stundenGebuchtFuerPeriode(m.id, beginn, ende, baustellen);
+    const gebucht = stundenGebuchtFuerPeriode(m.id, beginn, ende, baustellen, wochenendeEinschliessen);
     const verfuegbar = kapazitaetGesamt - gebucht;
     const auslastungProzent = kapazitaetGesamt > 0 ? Math.min(100, Math.round((gebucht / kapazitaetGesamt) * 100)) : 0;
     return { mitarbeiter: m, gebucht, verfuegbar, auslastungProzent };
@@ -2701,6 +2737,10 @@ function StundenUebersicht({ baustellen, mitarbeiter }) {
           <div style={{ fontSize: 13, fontWeight: 700, minWidth: 160, textAlign: "center", textTransform: "capitalize" }}>{label}</div>
           <button onClick={geheNext} style={navBtnStyle}><ChevronRight size={16} /></button>
         </div>
+        <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, color: COLORS.textMuted }}>
+          <input type="checkbox" checked={wochenendeEinschliessen} onChange={(e) => setWochenendeEinschliessen(e.target.checked)} />
+          Wochenenden einbeziehen
+        </label>
       </div>
 
       <div style={{ fontSize: 11.5, color: COLORS.textMuted, marginBottom: 12 }}>
