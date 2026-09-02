@@ -294,6 +294,7 @@ function mapMitarbeiterRow(row) {
     farbe: row.farbe,
     istAdmin: row.ist_admin,
     genehmigt: row.genehmigt !== false, // true par défaut si absent
+    privatFuer: row.privat_fuer || null, // si défini, ce profil n'est visible que pour ce mitarbeiter.id
   };
 }
 function mapBaustelleRow(row, zuweisungenRows) {
@@ -822,6 +823,58 @@ export default function Baustellenplanung() {
     return null;
   };
 
+  // Crée un Termin générique "Privat" sur le(s) calendrier(s) public(s) des
+  // propriétaires des profils privés concernés, pour marquer le créneau
+  // comme occupé — sans jamais révéler le motif réel du rendez-vous privé.
+  const blockiereOeffentlichenKalender = async (zuweisungen, beginn, ende, samstagAktiv, sonntagAktiv) => {
+    const eigentuemerIds = [...new Set(
+      zuweisungen
+        .map((z) => data.mitarbeiter.find((m) => m.id === z.mitarbeiterId))
+        .filter((m) => m && m.privatFuer)
+        .map((m) => m.privatFuer)
+    )];
+    if (eigentuemerIds.length === 0) return;
+
+    let privatKunde = data.kunden.find((k) => k.name === "Privat");
+    if (!privatKunde) {
+      const { data: neu, error: err } = await supabase.from("kunden").insert({ name: "Privat" }).select().single();
+      if (err) { setError(`Fehler: ${err.message}`); return; }
+      privatKunde = mapKundeRow(neu);
+      setData((d) => ({ ...d, kunden: [...d.kunden, privatKunde] }));
+    }
+    let privatProjekt = data.projekte.find((p) => p.titel === "Privat" && p.kundeId === privatKunde.id);
+    if (!privatProjekt) {
+      const { data: neu, error: err } = await supabase.from("projekte").insert({ titel: "Privat", kunde_id: privatKunde.id, status: "aktiv" }).select().single();
+      if (err) { setError(`Fehler: ${err.message}`); return; }
+      privatProjekt = mapProjektRow(neu);
+      setData((d) => ({ ...d, projekte: [privatProjekt, ...d.projekte] }));
+    }
+
+    for (const eigentuemerId of eigentuemerIds) {
+      const { data: neueBaustelle, error: bErr } = await supabase
+        .from("baustellen")
+        .insert({
+          projekt_id: privatProjekt.id, kunde_id: privatKunde.id, kunde: "Privat",
+          kontakt_name: "", kontakt_telefon: "", beschreibung: "",
+          strasse: "", plz: "", stadt: "",
+          beginn, ende, samstag_aktiv: samstagAktiv, sonntag_aktiv: sonntagAktiv,
+        })
+        .select().single();
+      if (bErr) { setError(`Fehler beim Blockieren: ${bErr.message}`); continue; }
+      const { error: zErr } = await supabase.from("zuweisungen").insert({ baustelle_id: neueBaustelle.id, mitarbeiter_id: eigentuemerId, beginn, ende });
+      if (zErr) { setError(`Fehler beim Blockieren: ${zErr.message}`); continue; }
+      setData((d) => ({
+        ...d,
+        baustellen: [...d.baustellen, {
+          id: neueBaustelle.id, projektId: privatProjekt.id, kundeId: privatKunde.id, kunde: "Privat",
+          kontaktName: "", kontaktTelefon: "", beschreibung: "", strasse: "", plz: "", stadt: "",
+          beginn, ende, samstagAktiv, sonntagAktiv, startzeit: "", endzeit: "",
+          zuweisungen: [{ mitarbeiterId: eigentuemerId, beginn, ende }],
+        }],
+      }));
+    }
+  };
+
   const saveBaustelle = async () => {
     if (!form.kunde.trim() || !form.beginn || !form.ende) return;
     const outOfRange = form.zuweisungen.filter((z) => z.beginn < form.beginn || z.ende > form.ende);
@@ -903,8 +956,22 @@ export default function Baustellenplanung() {
       baustelleId = inserted.id;
     }
 
-    if (form.zuweisungen.length > 0) {
-      const rows = form.zuweisungen.map((z) => ({
+    // Duplication automatique vers un éventuel profil privé lié (ex. "Amin 2"
+    // pour "Amin") : tout rendez-vous où le profil "public" est affecté est
+    // aussi enregistré, aux mêmes dates, sur son profil privé.
+    let zuweisungenMitSpiegelung = [...form.zuweisungen];
+    data.mitarbeiter
+      .filter((m) => m.privatFuer)
+      .forEach((privat) => {
+        const oeffentlich = zuweisungenMitSpiegelung.find((z) => z.mitarbeiterId === privat.privatFuer);
+        const dejaVorhanden = zuweisungenMitSpiegelung.some((z) => z.mitarbeiterId === privat.id);
+        if (oeffentlich && !dejaVorhanden) {
+          zuweisungenMitSpiegelung.push({ mitarbeiterId: privat.id, beginn: oeffentlich.beginn, ende: oeffentlich.ende });
+        }
+      });
+
+    if (zuweisungenMitSpiegelung.length > 0) {
+      const rows = zuweisungenMitSpiegelung.map((z) => ({
         baustelle_id: baustelleId,
         mitarbeiter_id: z.mitarbeiterId,
         beginn: z.beginn,
@@ -931,7 +998,7 @@ export default function Baustellenplanung() {
       sonntagAktiv: baustelleFields.sonntag_aktiv,
       startzeit: form.startzeit || "",
       endzeit: form.endzeit || "",
-      zuweisungen: form.zuweisungen,
+      zuweisungen: zuweisungenMitSpiegelung,
     };
     setData((d) => ({
       ...d,
@@ -941,6 +1008,23 @@ export default function Baustellenplanung() {
     }));
     setError(null);
     setModalOpen(false);
+
+    // Si ce NOUVEAU Termin n'est affecté qu'à des profils privés (ex. Amin
+    // réserve directement sur "Amin 2"), on lui demande s'il souhaite aussi
+    // bloquer son calendrier public, sans révéler le motif à personne.
+    const istNeuerTermin = !form.id;
+    const alleZuweisungenPrivat = form.zuweisungen.length > 0 && form.zuweisungen.every((z) => {
+      const m = data.mitarbeiter.find((mm) => mm.id === z.mitarbeiterId);
+      return m && m.privatFuer;
+    });
+    if (istNeuerTermin && alleZuweisungenPrivat) {
+      const blockieren = window.confirm(
+        "Dieser private Termin ist nur auf deinem privaten Kalender sichtbar.\n\nMöchtest du zusätzlich deinen normalen (öffentlichen) Kalender für diesen Zeitraum als belegt markieren, ohne den Grund zu zeigen — damit dich niemand dafür einplant?\n\nOK = ja, blockieren.\nAbbrechen = nein, Zeitraum bleibt für andere frei."
+      );
+      if (blockieren) {
+        await blockiereOeffentlichenKalender(form.zuweisungen, form.beginn, form.ende, form.samstagAktiv, form.sonntagAktiv);
+      }
+    }
   };
   const deleteBaustelle = async () => {
     const { error: err } = await supabase.from("baustellen").delete().eq("id", form.id);
@@ -981,13 +1065,40 @@ export default function Baustellenplanung() {
   };
 
   // --- Derived (avec restriction de droits) ---
+  // Un profil "privé" (privatFuer défini) n'est visible que pour son propriétaire.
+  const sichtbareMitarbeiter = data.mitarbeiter.filter((m) => !m.privatFuer || m.privatFuer === currentUserId);
+
   const visibleMitarbeiterList = isAdmin
-    ? data.mitarbeiter
-    : data.mitarbeiter.filter((m) => m.id === currentUserId);
+    ? sichtbareMitarbeiter
+    : sichtbareMitarbeiter.filter((m) => m.id === currentUserId);
 
   const displayedColleagues = filterId
-    ? data.mitarbeiter.filter((m) => m.id === filterId)
+    ? sichtbareMitarbeiter.filter((m) => m.id === filterId)
     : visibleMitarbeiterList;
+
+  // Un chantier n'est masqué que si TOUS ses employés assignés sont des
+  // profils privés qui ne m'appartiennent pas — sinon il reste visible
+  // normalement (le cas normal, sans aucun profil privé impliqué).
+  const istBaustelleSichtbar = (b) => {
+    const zugewiesene = (b.zuweisungen || []).map((z) => data.mitarbeiter.find((m) => m.id === z.mitarbeiterId)).filter(Boolean);
+    if (zugewiesene.length === 0) return true;
+    return zugewiesene.some((m) => !m.privatFuer || m.privatFuer === currentUserId);
+  };
+
+  // Un projet est masqué s'il a au moins un Termin et qu'AUCUN de ses
+  // Termine n'est visible (c-à-d. tous privés et non-possédés par moi).
+  const sichtbareProjekte = data.projekte.filter((p) => {
+    const alleTermine = data.baustellen.filter((b) => b.projektId === p.id);
+    if (alleTermine.length === 0) return true;
+    return alleTermine.some(istBaustelleSichtbar);
+  });
+
+  // Une absence n'est visible que si elle concerne un profil non-privé,
+  // ou un profil privé qui m'appartient.
+  const sichtbareAbwesenheiten = data.abwesenheiten.filter((a) => {
+    const m = data.mitarbeiter.find((mm) => mm.id === a.mitarbeiterId);
+    return !m || !m.privatFuer || m.privatFuer === currentUserId;
+  });
 
   const baustellenFor = (date) =>
     data.baustellen.filter((b) => {
@@ -999,7 +1110,7 @@ export default function Baustellenplanung() {
         const z = (b.zuweisungen || []).find((zz) => zz.mitarbeiterId === filterId);
         return z && isZuweisungAktivAm(z, date);
       }
-      return isActiveOn(b, date);
+      return isActiveOn(b, date) && istBaustelleSichtbar(b);
     });
 
 
@@ -1301,8 +1412,8 @@ export default function Baustellenplanung() {
                   grid={monthGrid}
                   currentDate={currentDate}
                   baustellenFor={baustellenFor}
-                  alleMitarbeiter={data.mitarbeiter}
-                  abwesenheiten={data.abwesenheiten}
+                  alleMitarbeiter={sichtbareMitarbeiter}
+                  abwesenheiten={sichtbareAbwesenheiten}
                   onDayClick={openNewBaustelle}
                   onBaustelleClick={openEditBaustelle}
                 />
@@ -1312,8 +1423,8 @@ export default function Baustellenplanung() {
                   dates={view === "tag" ? [currentDate] : weekDates}
                   mitarbeiter={displayedColleagues.length ? displayedColleagues : visibleMitarbeiterList}
                   baustellen={data.baustellen}
-                  alleMitarbeiter={data.mitarbeiter}
-                  abwesenheiten={data.abwesenheiten}
+                  alleMitarbeiter={sichtbareMitarbeiter}
+                  abwesenheiten={sichtbareAbwesenheiten}
                   isAdmin={isAdmin && !filterId}
                   onCellClick={openNewBaustelle}
                   onBaustelleClick={openEditBaustelle}
@@ -1325,9 +1436,9 @@ export default function Baustellenplanung() {
 
         {page === "projekte" && (
           <ProjekteListPage
-            baustellen={data.baustellen}
-            projekte={data.projekte}
-            alleMitarbeiter={data.mitarbeiter}
+            baustellen={data.baustellen.filter(istBaustelleSichtbar)}
+            projekte={sichtbareProjekte}
+            alleMitarbeiter={sichtbareMitarbeiter}
             alleKunden={data.kunden}
             isAdmin={isAdmin}
             onOpenSidebar={() => setSidebarOpen(true)}
@@ -1354,8 +1465,8 @@ export default function Baustellenplanung() {
         {page === "ressourcen" && (
           <RessourcenPage
             baustellen={data.baustellen}
-            mitarbeiter={data.mitarbeiter}
-            abwesenheiten={data.abwesenheiten}
+            mitarbeiter={sichtbareMitarbeiter}
+            abwesenheiten={sichtbareAbwesenheiten}
             stundennachweis={data.stundennachweis}
             isAdmin={isAdmin}
             currentUserId={currentUserId}
@@ -1373,10 +1484,10 @@ export default function Baustellenplanung() {
         <BaustelleModal
           form={form}
           setForm={setForm}
-          mitarbeiterListe={isAdmin ? data.mitarbeiter : data.mitarbeiter.filter((m) => m.id === currentUserId)}
-          alleMitarbeiter={data.mitarbeiter}
+          mitarbeiterListe={isAdmin ? sichtbareMitarbeiter : sichtbareMitarbeiter.filter((m) => m.id === currentUserId)}
+          alleMitarbeiter={sichtbareMitarbeiter}
           alleKunden={data.kunden}
-          alleProjekte={data.projekte}
+          alleProjekte={sichtbareProjekte}
           onSelectKunde={applyKundeToForm}
           onToggleMitarbeiter={toggleFormMitarbeiter}
           onUpdateZuweisung={updateFormZuweisung}
@@ -1410,7 +1521,7 @@ export default function Baustellenplanung() {
 
       {teamModalOpen && isAdmin && (
         <TeamModal
-          mitarbeiter={data.mitarbeiter}
+          mitarbeiter={sichtbareMitarbeiter}
           currentUserId={currentUserId}
           newName={newName}
           setNewName={setNewName}
