@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Plus, X, MapPin, User, ChevronLeft, ChevronRight, Trash2, Users, LogOut, ShieldCheck, Calendar as CalendarIcon, Mail, Phone, Home, Send, Menu as MenuIcon, Clock, ClipboardList, Building2, Search, FileText, Download } from "lucide-react";
+import { Plus, X, MapPin, User, ChevronLeft, ChevronRight, Trash2, Users, LogOut, ShieldCheck, Calendar as CalendarIcon, Mail, Phone, Home, Send, Menu as MenuIcon, Clock, ClipboardList, Building2, Search, FileText, Download, Navigation } from "lucide-react";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import * as XLSX from "xlsx";
@@ -369,6 +369,13 @@ function findeAbwesenheitenFuerZeitraum(mitarbeiterId, beginn, ende, abwesenheit
 function formatAdresse(b) {
   const zeile2 = [b.plz, b.stadt].filter(Boolean).join(" ");
   return [b.strasse, zeile2].filter(Boolean).join(", ");
+}
+// Ouvre Google Maps avec l'itinéraire depuis la position actuelle de
+// l'utilisateur (Google Maps la détecte automatiquement) vers l'adresse.
+function mapsRichtungUrl(b) {
+  const adresse = formatAdresse(b);
+  if (!adresse) return null;
+  return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(adresse)}`;
 }
 function formatZeitraum(b) {
   if (b.startzeit && b.endzeit) return `${b.startzeit} – ${b.endzeit}`;
@@ -2138,7 +2145,15 @@ function ResourceView({ dates, mitarbeiter, baustellen, alleMitarbeiter, abwesen
                       {formatAdresse(b) && (
                         <div style={{ color: COLORS.textMuted, fontSize: 10.5, display: "flex", alignItems: "center", gap: 3, minWidth: 0, overflow: "hidden" }}>
                           <MapPin size={9} style={{ flexShrink: 0 }} />
-                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{formatAdresse(b)}</span>
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, flex: 1 }}>{formatAdresse(b)}</span>
+                          <a
+                            href={mapsRichtungUrl(b)} target="_blank" rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            title="Route in Google Maps öffnen"
+                            style={{ flexShrink: 0, color: COLORS.accent, display: "flex" }}
+                          >
+                            <Navigation size={11} />
+                          </a>
                         </div>
                       )}
                       {formatZeitraum(b) && (
@@ -2372,6 +2387,18 @@ function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, alle
             <input style={inputStyle} value={form.stadt} onChange={(e) => setForm({ ...form, stadt: e.target.value })} placeholder="Balingen" />
           </Field>
         </div>
+        {mapsRichtungUrl(form) && (
+          <a
+            href={mapsRichtungUrl(form)} target="_blank" rel="noopener noreferrer"
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
+              border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "9px 0", marginBottom: 14,
+              color: COLORS.accent, fontSize: 12.5, fontWeight: 700, textDecoration: "none",
+            }}
+          >
+            <Navigation size={14} /> Route in Google Maps öffnen
+          </a>
+        )}
         <div style={{ display: "flex", gap: 10 }}>
           <Field label="Beginn (Termin)" style={{ flex: 1 }}>
             <input
