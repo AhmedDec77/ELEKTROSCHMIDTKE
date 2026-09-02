@@ -471,13 +471,15 @@ export default function Baustellenplanung() {
   }, []);
 
   // --- Session Supabase Auth (remplace l'ancienne identité stockée localement) ---
+  const [passwortWiederherstellen, setPasswortWiederherstellen] = useState(false);
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setAuthSession(session);
       setAuthLoaded(true);
       loadData(session);
     });
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "PASSWORD_RECOVERY") setPasswortWiederherstellen(true);
       setAuthSession(session);
       loadData(session);
     });
@@ -1153,6 +1155,10 @@ export default function Baustellenplanung() {
     );
   }
 
+  if (passwortWiederherstellen) {
+    return <NeuesPasswortSetzen onDone={() => setPasswortWiederherstellen(false)} />;
+  }
+
   if (!authSession || !me) {
     return (
       <IdentityGate
@@ -1592,6 +1598,50 @@ function ProfilVervollstaendigenGate({ me, onSave, onLogout }) {
   );
 }
 
+function NeuesPasswortSetzen({ onDone }) {
+  const [passwort, setPasswort] = useState("");
+  const [passwort2, setPasswort2] = useState("");
+  const [laedt, setLaedt] = useState(false);
+  const [fehler, setFehler] = useState("");
+  const [erfolg, setErfolg] = useState(false);
+
+  const submit = async () => {
+    setFehler("");
+    if (!passwortOk(passwort)) { setFehler("Passwort muss mindestens 8 Zeichen haben."); return; }
+    if (passwort !== passwort2) { setFehler("Passwörter stimmen nicht überein."); return; }
+    setLaedt(true);
+    const { error: err } = await supabase.auth.updateUser({ password: passwort });
+    setLaedt(false);
+    if (err) { setFehler(`Fehler: ${err.message}`); return; }
+    setErfolg(true);
+  };
+
+  return (
+    <div style={{ background: COLORS.bgDark, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "system-ui, sans-serif", padding: 16 }}>
+      <div style={{ background: "#fff", borderRadius: 16, padding: 30, width: "100%", maxWidth: 380 }}>
+        <div style={{ fontSize: 17, fontWeight: 800, marginBottom: 14 }}>Neues Passwort festlegen</div>
+        {fehler && <div style={{ background: "#FDECEA", color: "#B42318", fontSize: 12, padding: "8px 10px", borderRadius: 7, marginBottom: 10 }}>{fehler}</div>}
+        {erfolg ? (
+          <>
+            <div style={{ fontSize: 13, color: COLORS.textMuted, marginBottom: 16 }}>
+              ✓ Passwort erfolgreich geändert. Du kannst dich jetzt normal anmelden.
+            </div>
+            <button onClick={onDone} style={{ ...btnPrimary, width: "100%" }}>Weiter zur Anmeldung</button>
+          </>
+        ) : (
+          <>
+            <input style={{ ...inputStyle, marginBottom: 8 }} type="password" placeholder="Neues Passwort (min. 8 Zeichen)" value={passwort} onChange={(e) => setPasswort(e.target.value)} />
+            <input style={{ ...inputStyle, marginBottom: 12 }} type="password" placeholder="Passwort bestätigen" value={passwort2} onChange={(e) => setPasswort2(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
+            <button onClick={submit} disabled={laedt} style={{ ...btnPrimary, width: "100%", opacity: laedt ? 0.6 : 1 }}>
+              {laedt ? "…" : "Passwort speichern"}
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function IdentityGate({ mitarbeiter, hatSession, error, onCleanError }) {
   const [modus, setModus] = useState("login"); // login | claim | register
   const [claimTarget, setClaimTarget] = useState(null); // profil {id, name, ...} en cours de revendication
@@ -1687,6 +1737,8 @@ function LoginForm({ onCleanError }) {
   const [passwort, setPasswort] = useState("");
   const [laedt, setLaedt] = useState(false);
   const [fehler, setFehler] = useState("");
+  const [vergessenModus, setVergessenModus] = useState(false);
+  const [vergessenGesendet, setVergessenGesendet] = useState(false);
 
   const submit = async () => {
     onCleanError();
@@ -1698,6 +1750,50 @@ function LoginForm({ onCleanError }) {
     if (err) setFehler(err.message === "Invalid login credentials" ? "E-Mail oder Passwort falsch." : `Anmeldefehler: ${err.message}`);
   };
 
+  const passwortVergessenSenden = async () => {
+    onCleanError();
+    setFehler("");
+    if (!email.trim()) { setFehler("Bitte zuerst deine E-Mail-Adresse eingeben."); return; }
+    setLaedt(true);
+    const { error: err } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin });
+    setLaedt(false);
+    if (err) { setFehler(`Fehler: ${err.message}`); return; }
+    setVergessenGesendet(true);
+  };
+
+  if (vergessenModus) {
+    return (
+      <div style={{ marginTop: 14 }}>
+        <div style={{ fontSize: 19, fontWeight: 800, marginBottom: 14 }}>Passwort vergessen</div>
+        {fehler && <div style={{ background: "#FDECEA", color: "#B42318", fontSize: 12, padding: "8px 10px", borderRadius: 7, marginBottom: 10 }}>{fehler}</div>}
+        {vergessenGesendet ? (
+          <div style={{ fontSize: 13, color: COLORS.textMuted, marginBottom: 12 }}>
+            ✓ Falls ein Konto mit dieser E-Mail existiert, wurde eine E-Mail mit einem Link zum Zurücksetzen verschickt. Bitte Posteingang (und Spam-Ordner) prüfen.
+          </div>
+        ) : (
+          <>
+            <div style={{ fontSize: 12.5, color: COLORS.textMuted, marginBottom: 10 }}>
+              Gib deine E-Mail-Adresse ein — wir schicken dir einen Link, um ein neues Passwort zu setzen.
+            </div>
+            <input
+              style={{ ...inputStyle, marginBottom: 12 }} type="email" placeholder="E-Mail" value={email}
+              onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === "Enter" && passwortVergessenSenden()}
+            />
+            <button onClick={passwortVergessenSenden} disabled={laedt} style={{ ...btnPrimary, width: "100%", opacity: laedt ? 0.6 : 1 }}>
+              {laedt ? "…" : "Link zum Zurücksetzen senden"}
+            </button>
+          </>
+        )}
+        <button
+          onClick={() => { setVergessenModus(false); setVergessenGesendet(false); setFehler(""); onCleanError(); }}
+          style={{ border: "none", background: "none", color: COLORS.textMuted, fontSize: 12, textDecoration: "underline", cursor: "pointer", padding: 0, marginTop: 12 }}
+        >
+          Zurück zur Anmeldung
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div style={{ marginTop: 14 }}>
       <div style={{ fontSize: 19, fontWeight: 800, marginBottom: 14 }}>Anmelden</div>
@@ -1707,9 +1803,15 @@ function LoginForm({ onCleanError }) {
         onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()}
       />
       <input
-        style={{ ...inputStyle, marginBottom: 12 }} type="password" placeholder="Passwort" value={passwort}
+        style={{ ...inputStyle, marginBottom: 6 }} type="password" placeholder="Passwort" value={passwort}
         onChange={(e) => setPasswort(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()}
       />
+      <button
+        onClick={() => { setVergessenModus(true); setFehler(""); onCleanError(); }}
+        style={{ border: "none", background: "none", color: COLORS.accent, fontSize: 11.5, fontWeight: 700, textDecoration: "underline", cursor: "pointer", padding: 0, marginBottom: 12, display: "block" }}
+      >
+        Passwort vergessen?
+      </button>
       <button onClick={submit} disabled={laedt} style={{ ...btnPrimary, width: "100%", opacity: laedt ? 0.6 : 1 }}>
         {laedt ? "…" : "Anmelden"}
       </button>
