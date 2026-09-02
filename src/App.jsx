@@ -1461,7 +1461,7 @@ function BaustellenplanungInnen() {
                   border: "none", borderRadius: 8, padding: "9px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer",
                 }}
               >
-                <Plus size={16} /> Neue Baustelle
+                <Plus size={16} /> Neuer Termin
               </button>
             </div>
 
