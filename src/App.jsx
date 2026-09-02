@@ -413,7 +413,51 @@ const EMPTY_FORM = {
 const EMPTY_KUNDE_FORM = { id: null, name: "", kontaktName: "", kontaktTelefon: "", strasse: "", plz: "", stadt: "" };
 const EMPTY_PROJEKT_FORM = { id: null, titel: "", kundeId: null, kundeNameEingabe: "" };
 
-export default function Baustellenplanung() {
+// Filet de sécurité : en cas d'erreur inattendue pendant le rendu, affiche
+// le message d'erreur réel à l'écran (au lieu d'une page blanche muette),
+// pour pouvoir le communiquer et le corriger rapidement.
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { erreur: null };
+  }
+  static getDerivedStateFromError(erreur) {
+    return { erreur };
+  }
+  componentDidCatch(erreur, info) {
+    console.error("Baustellenplanung – Rendering-Fehler:", erreur, info);
+  }
+  render() {
+    if (this.state.erreur) {
+      return (
+        <div style={{ background: "#1C2126", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "system-ui, sans-serif", padding: 16 }}>
+          <div style={{ background: "#fff", borderRadius: 16, padding: 26, width: "100%", maxWidth: 480 }}>
+            <div style={{ fontSize: 32, marginBottom: 10 }}>⚠️</div>
+            <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 10 }}>Etwas ist schiefgelaufen</div>
+            <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 14 }}>
+              Bitte diesen Text als Screenshot senden, dann kann der Fehler behoben werden:
+            </div>
+            <div style={{
+              background: "#FDECEA", color: "#B42318", fontSize: 11.5, padding: "10px 12px", borderRadius: 8,
+              marginBottom: 16, fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 200, overflowY: "auto",
+            }}>
+              {String(this.state.erreur?.message || this.state.erreur)}
+            </div>
+            <button
+              onClick={() => window.location.reload()}
+              style={{ width: "100%", background: "#BC313F", color: "#fff", border: "none", borderRadius: 8, padding: "11px 0", fontSize: 13.5, fontWeight: 700, cursor: "pointer" }}
+            >
+              Seite neu laden
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function BaustellenplanungInnen() {
   const [data, setData] = useState({ mitarbeiter: [], baustellen: [], kunden: [], projekte: [], abwesenheiten: [], stundennachweis: [] });
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(null);
@@ -1558,6 +1602,14 @@ export default function Baustellenplanung() {
         />
       )}
     </div>
+  );
+}
+
+export default function Baustellenplanung() {
+  return (
+    <ErrorBoundary>
+      <BaustellenplanungInnen />
+    </ErrorBoundary>
   );
 }
 
