@@ -419,13 +419,14 @@ const EMPTY_PROJEKT_FORM = { id: null, titel: "", kundeId: null, kundeNameEingab
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
-    this.state = { erreur: null };
+    this.state = { erreur: null, componentStack: "" };
   }
   static getDerivedStateFromError(erreur) {
     return { erreur };
   }
   componentDidCatch(erreur, info) {
     console.error("Baustellenplanung – Rendering-Fehler:", erreur, info);
+    this.setState({ componentStack: info?.componentStack || "" });
   }
   render() {
     if (this.state.erreur) {
@@ -439,10 +440,18 @@ class ErrorBoundary extends React.Component {
             </div>
             <div style={{
               background: "#FDECEA", color: "#B42318", fontSize: 11.5, padding: "10px 12px", borderRadius: 8,
-              marginBottom: 16, fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 200, overflowY: "auto",
+              marginBottom: 10, fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 130, overflowY: "auto",
             }}>
               {String(this.state.erreur?.message || this.state.erreur)}
             </div>
+            {this.state.componentStack && (
+              <div style={{
+                background: "#F3F2ED", color: "#4A5568", fontSize: 10.5, padding: "10px 12px", borderRadius: 8,
+                marginBottom: 16, fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 150, overflowY: "auto",
+              }}>
+                {this.state.componentStack.trim()}
+              </div>
+            )}
             <button
               onClick={() => window.location.reload()}
               style={{ width: "100%", background: "#BC313F", color: "#fff", border: "none", borderRadius: 8, padding: "11px 0", fontSize: 13.5, fontWeight: 700, cursor: "pointer" }}
