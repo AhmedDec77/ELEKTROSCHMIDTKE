@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Plus, X, MapPin, User, ChevronLeft, ChevronRight, Trash2, Users, LogOut, ShieldCheck, Calendar as CalendarIcon, Mail, Phone, Home, Send, Menu as MenuIcon, Clock, ClipboardList, Building2, Search, FileText, Download, Map } from "lucide-react";
-import { jsPDF } from "jspdf";
-import autoTable from "jspdf-autotable";
-import * as XLSX from "xlsx";
+// jsPDF, jspdf-autotable et xlsx sont chargés à la demande (voir pdfErstellen
+// / excelExportieren) plutôt qu'au chargement de l'app — plus robuste sur
+// certains navigateurs mobiles, et allège le chargement initial.
 import { supabase } from "./supabaseClient";
 
 const COLORS = {
@@ -3642,7 +3642,8 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
     setGeladenAus((g) => (g === "gespeichert" ? "bearbeitet" : g));
   };
 
-  const excelExportieren = () => {
+  const excelExportieren = async () => {
+    const XLSX = await import("xlsx");
     const monatBeginn = fmt(new Date(jahr, monat, 1));
     const monatEnde = fmt(new Date(jahr, monat + 1, 0));
     const heuteStr = formatDatumDE(fmt(new Date()));
@@ -3682,7 +3683,9 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
     XLSX.writeFile(wb, dateiname);
   };
 
-  const pdfErstellen = () => {
+  const pdfErstellen = async () => {
+    const { jsPDF } = await import("jspdf");
+    const { default: autoTable } = await import("jspdf-autotable");
     const doc = new jsPDF({ unit: "mm", format: "a4" });
     const marginX = 15;
     let y = 18;
