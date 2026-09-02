@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Plus, X, MapPin, User, ChevronLeft, ChevronRight, Trash2, Users, LogOut, ShieldCheck, Calendar as CalendarIcon, Mail, Phone, Home, Send, Menu as MenuIcon, Clock, ClipboardList, Building2, Search, FileText, Download, Map } from "lucide-react";
+import { Plus, X, MapPin, User, ChevronLeft, ChevronRight, Trash2, Users, LogOut, ShieldCheck, Calendar as CalendarIcon, Mail, Phone, Home, Send, Menu as MenuIcon, Clock, ClipboardList, Building2, Search, FileText, Download, Map as MapIcon } from "lucide-react";
 // jsPDF, jspdf-autotable et xlsx sont chargés à la demande (voir pdfErstellen
 // / excelExportieren) plutôt qu'au chargement de l'app — plus robuste sur
 // certains navigateurs mobiles, et allège le chargement initial.
@@ -2213,7 +2213,7 @@ function ResourceView({ dates, mitarbeiter, baustellen, alleMitarbeiter, abwesen
                             title="Route in Google Maps öffnen"
                             style={{ flexShrink: 0, color: COLORS.accent, display: "flex" }}
                           >
-                            <Map size={11} />
+                            <MapIcon size={11} />
                           </a>
                         </div>
                       )}
@@ -2457,7 +2457,7 @@ function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, alle
               color: COLORS.accent, fontSize: 12.5, fontWeight: 700, textDecoration: "none",
             }}
           >
-            <Map size={14} /> Route in Google Maps öffnen
+            <MapIcon size={14} /> Route in Google Maps öffnen
           </a>
         )}
         <div style={{ display: "flex", gap: 10 }}>
