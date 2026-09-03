@@ -303,6 +303,7 @@ function mapMitarbeiterRow(row) {
     istAdmin: row.ist_admin,
     genehmigt: row.genehmigt !== false, // true par défaut si absent
     privatFuer: row.privat_fuer || null, // si défini, ce profil n'est visible que pour ce mitarbeiter.id
+    zeiterfassungBefreit: row.zeiterfassung_befreit === true,
   };
 }
 function mapBaustelleRow(row, zuweisungenRows) {
@@ -582,6 +583,11 @@ function BaustellenplanungInnen() {
   const me = data.mitarbeiter.find((m) => m.authUserId === authSession?.user?.id) || null;
   const currentUserId = me?.id || null;
   const isAdmin = !!me?.istAdmin;
+
+  useEffect(() => {
+    if (me?.zeiterfassungBefreit && page === "pointeuse") setPage("kalender");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [me?.id]);
 
   const switchUser = async () => {
     await supabase.auth.signOut();
@@ -1264,7 +1270,7 @@ function BaustellenplanungInnen() {
   // planifié, mais où la pointeuse n'a pas d'heure de début ET de fin
   // complète — à faire confirmer/rattraper.
   const fehlendeArbeitszeitTage = (() => {
-    if (!currentUserId) return [];
+    if (!currentUserId || me?.zeiterfassungBefreit) return [];
     const debutSemaineEnCours = fmt(startOfWeek(new Date()));
     const limite = ZEITERFASSUNG_TRACKING_START; // pas d'historique avant la mise en place de la pointeuse
     const tage = new Map(); // datum -> [{ kunde }]
@@ -1298,7 +1304,7 @@ function BaustellenplanungInnen() {
   // Stundennachweis (Wochendetail) n'a jamais été enregistré — pour éviter
   // d'attendre la fin du mois et n'avoir plus que de vagues souvenirs.
   const nichtGespeicherteWochen = (() => {
-    if (!currentUserId) return [];
+    if (!currentUserId || me?.zeiterfassungBefreit) return [];
     const debutSemaineEnCours = fmt(startOfWeek(new Date()));
     const limite = ZEITERFASSUNG_TRACKING_START; // pas d'historique avant cette date
     const wochenMitTermin = new Map(); // "KW-Jahr" -> { kw, jahr, beginn, ende }
@@ -1448,7 +1454,7 @@ function BaustellenplanungInnen() {
 
         <div style={{ padding: "0 10px 10px", display: "flex", flexDirection: "column", gap: 2 }}>
           {[
-            ["pointeuse", Clock, "Zeiterfassung"],
+            ...(me?.zeiterfassungBefreit ? [] : [["pointeuse", Clock, "Zeiterfassung"]]),
             ["kalender", CalendarIcon, "Kalender"],
             ["projekte", ClipboardList, "Projekte"],
             ["kunden", Building2, "Kunden"],
