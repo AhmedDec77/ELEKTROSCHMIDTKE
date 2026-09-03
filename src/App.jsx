@@ -2323,7 +2323,13 @@ function ResourceView({ dates, mitarbeiter, baustellen, alleMitarbeiter, abwesen
   const abwesenheitFuer = (person, date) => {
     if (person.id === "__unassigned" || person.id === "__none") return null;
     const ds = fmt(date);
-    return (abwesenheiten || []).find((a) => a.mitarbeiterId === person.id && a.beginn <= ds && ds <= a.ende) || null;
+    // Une absence enregistrée sur le profil public ("Amin") doit aussi
+    // apparaître sur son profil privé lié ("Amin 2"), et inversement —
+    // c'est la même personne, simplement affiché à deux endroits.
+    const verwandteIds = [person.id];
+    if (person.privatFuer) verwandteIds.push(person.privatFuer);
+    (alleMitarbeiter || []).forEach((m) => { if (m.privatFuer === person.id) verwandteIds.push(m.id); });
+    return (abwesenheiten || []).find((a) => verwandteIds.includes(a.mitarbeiterId) && a.beginn <= ds && ds <= a.ende) || null;
   };
   const rows = [
     ...mitarbeiter,
