@@ -4365,7 +4365,22 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
     let n = 0;
     for (const ds of alleTageZwischen(monatBeginn, monatEnde)) {
       const roh = eintraegeFuerTag(mitarbeiterId, ds, baustellen);
-      if (roh.length === 0) continue;
+      if (roh.length === 0) {
+        // Jour sans chantier : si absence complète (Urlaub/Krankheit/
+        // Fortbildung), on crédite 8h — pour le calcul du salaire dans le
+        // détail hebdomadaire. Marqué "istAbwesenheit" pour ne JAMAIS être
+        // compté dans le document légal mensuel (Dauer der Arbeitsleistung
+        // ne doit refléter que le temps de travail réellement effectué).
+        const abwesenheitDesTages = (abwesenheiten || []).find((a) => a.mitarbeiterId === mitarbeiterId && a.beginn <= ds && ds <= a.ende);
+        if (abwesenheitDesTages) {
+          neu.push({
+            id: `auto-${n++}`, datum: ds,
+            kunde: ABWESENHEIT_LABEL[abwesenheitDesTages.typ] || abwesenheitDesTages.typ,
+            leistung: "", stunden: STANDARD_TAGESKAPAZITAET, istAbwesenheit: true,
+          });
+        }
+        continue;
+      }
 
       // Priorité aux vraies heures pointées (Stempeluhr) si elles existent
       // pour ce jour : elles définissent le total net réel, réparti entre
@@ -4502,7 +4517,7 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
     const monatBeginn = fmt(new Date(jahr, monat, 1));
     const monatEnde = fmt(new Date(jahr, monat + 1, 0));
     return alleTageZwischen(monatBeginn, monatEnde).map((ds) => {
-      const eintraegeTag = eintraege.filter((e) => e.datum === ds && Number(e.stunden) > 0);
+      const eintraegeTag = eintraege.filter((e) => e.datum === ds && Number(e.stunden) > 0 && !e.istAbwesenheit);
       const dauerStd = Math.round(eintraegeTag.reduce((s, e) => s + (Number(e.stunden) || 0), 0) * 4) / 4;
       const abwesenheit = (abwesenheiten || []).find((a) => a.mitarbeiterId === mitarbeiterId && a.beginn <= ds && ds <= a.ende);
       if (dauerStd <= 0) {
@@ -4602,7 +4617,9 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
       head: [["Datum der\nArbeitsleistung", "Uhrzeit Beginn\nder Arbeitsleistung", "Uhrzeit Ende\nder Arbeitsleistung", "Pause\nin Min.", "Dauer der\nArbeitsleistung (Std.)", "Datum der\nAufzeichnung"]],
       body: tage.map((t) => t.arbeitstag
         ? [formatDatumDE(t.datum), t.beginn, t.ende, String(t.pauseMin), String(t.dauerStd), formatDatumDE(aufzeichnungsDaten[t.datum] || "")]
-        : [formatDatumDE(t.datum), "----------", "----------", "", "", ""]
+        : t.abwesenheit
+          ? [formatDatumDE(t.datum), `${ABWESENHEIT_LABEL[t.abwesenheit.typ] || t.abwesenheit.typ} (bezahlt, nicht gearbeitet)`, "", "", "", ""]
+          : [formatDatumDE(t.datum), "----------", "----------", "", "", ""]
       ),
       styles: { fontSize: 8, cellPadding: 1.6, halign: "center" },
       headStyles: { fillColor: [230, 228, 222], textColor: 20, fontStyle: "bold", fontSize: 7.5 },
@@ -4716,10 +4733,10 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
                     </div>
                   ) : (
                     zeilen.map((z, i) => (
-                      <div key={z.id} style={{ display: "grid", gridTemplateColumns: "82px 1fr 1.4fr 56px 28px", gap: 4, padding: "3px 12px", fontSize: 12, borderTop: `1px solid ${COLORS.borderSoft}`, alignItems: "center" }}>
+                      <div key={z.id} style={{ display: "grid", gridTemplateColumns: "82px 1fr 1.4fr 56px 28px", gap: 4, padding: "3px 12px", fontSize: 12, borderTop: `1px solid ${COLORS.borderSoft}`, alignItems: "center", background: z.istAbwesenheit ? hexToRgba(COLORS.accent, 0.05) : "transparent" }}>
                         <div style={{ color: COLORS.textMuted }}>{i === 0 ? formatDatumDE(ds) : ""}</div>
-                        <input value={z.kunde} onChange={(e) => updateEintrag(z.id, { kunde: e.target.value })} style={{ ...inputStyle, padding: "3px 5px", fontSize: 11.5 }} placeholder="Kunde" />
-                        <input value={z.leistung} onChange={(e) => updateEintrag(z.id, { leistung: e.target.value })} style={{ ...inputStyle, padding: "3px 5px", fontSize: 11.5 }} placeholder="Leistung" />
+                        <input value={z.kunde} onChange={(e) => updateEintrag(z.id, { kunde: e.target.value })} style={{ ...inputStyle, padding: "3px 5px", fontSize: 11.5, fontStyle: z.istAbwesenheit ? "italic" : "normal" }} placeholder="Kunde" />
+                        <input value={z.leistung} onChange={(e) => updateEintrag(z.id, { leistung: e.target.value })} style={{ ...inputStyle, padding: "3px 5px", fontSize: 11.5 }} placeholder={z.istAbwesenheit ? "bezahlt, nicht gearbeitet" : "Leistung"} />
                         <input type="number" step="0.25" min="0" value={z.stunden} onChange={(e) => updateEintrag(z.id, { stunden: e.target.value })} style={{ ...inputStyle, padding: "3px 5px", fontSize: 11.5, width: 50 }} />
                         <div style={{ display: "flex", gap: 2 }}>
                           <button onClick={() => removeEintrag(z.id)} title="Löschen" style={{ border: "none", background: "transparent", cursor: "pointer", color: COLORS.textMuted }}>
