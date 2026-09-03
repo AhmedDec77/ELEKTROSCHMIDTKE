@@ -362,6 +362,25 @@ function mapStundennachweisEintragRow(row) {
     aufzeichnungsDatum: row.aufzeichnungsdatum || "",
   };
 }
+function mapArbeitszeitRow(row) {
+  return {
+    id: row.id,
+    mitarbeiterId: row.mitarbeiter_id,
+    datum: row.datum,
+    beginn: row.beginn ? row.beginn.slice(0, 5) : "",
+    ende: row.ende ? row.ende.slice(0, 5) : "",
+  };
+}
+function mapPauseRow(row) {
+  return {
+    id: row.id,
+    mitarbeiterId: row.mitarbeiter_id,
+    datum: row.datum,
+    beginn: row.beginn ? row.beginn.slice(0, 5) : "",
+    ende: row.ende ? row.ende.slice(0, 5) : "",
+    motiv: row.motiv || "",
+  };
+}
 const ABWESENHEIT_FARBE = { urlaub: "#0B7285", krankheit: "#B42318", fortbildung: "#6B46C1" };
 function findeAbwesenheitenFuerZeitraum(mitarbeiterId, beginn, ende, abwesenheiten) {
   return abwesenheiten.filter((a) => a.mitarbeiterId === mitarbeiterId && rangesOverlap(a.beginn, a.ende, beginn, ende));
@@ -467,7 +486,7 @@ class ErrorBoundary extends React.Component {
 }
 
 function BaustellenplanungInnen() {
-  const [data, setData] = useState({ mitarbeiter: [], baustellen: [], kunden: [], projekte: [], abwesenheiten: [], stundennachweis: [] });
+  const [data, setData] = useState({ mitarbeiter: [], baustellen: [], kunden: [], projekte: [], abwesenheiten: [], stundennachweis: [], arbeitszeiten: [], pausen: [] });
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(null);
   const [page, setPage] = useState("kalender"); // kalender | projekte | kunden
@@ -484,6 +503,8 @@ function BaustellenplanungInnen() {
   const [newIsAdmin, setNewIsAdmin] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false); // menu mobile
   const [kundeModalOpen, setKundeModalOpen] = useState(false);
+  const [arbeitszeitModalGeschlossen, setArbeitszeitModalGeschlossen] = useState(false);
+  const [stundennachweisErinnerungGeschlossen, setStundennachweisErinnerungGeschlossen] = useState(false);
   const [kundeForm, setKundeForm] = useState(EMPTY_KUNDE_FORM);
   const [projektModalOpen, setProjektModalOpen] = useState(false);
   const [projektForm, setProjektForm] = useState(EMPTY_PROJEKT_FORM);
@@ -503,13 +524,15 @@ function BaustellenplanungInnen() {
           supabase.from("kunden").select("*").order("name", { ascending: true }),
           supabase.from("projekte").select("*").order("nummer", { ascending: false }),
           supabase.from("abwesenheiten").select("*").order("beginn", { ascending: false }),
-          supabase.from("stundennachweis_eintraege").select("*").order("datum", { ascending: true })
+          supabase.from("stundennachweis_eintraege").select("*").order("datum", { ascending: true }),
+          supabase.from("arbeitszeiten").select("*").order("datum", { ascending: false }),
+          supabase.from("pausen").select("*").order("datum", { ascending: false })
         );
       }
       const results = await Promise.all(calls);
       const [{ data: mRows, error: mErr }] = results;
-      const bErrRes = results[1], zErrRes = results[2], kErrRes = results[3], pErrRes = results[4], aErrRes = results[5], sErrRes = results[6];
-      const anyErr = mErr || bErrRes?.error || zErrRes?.error || kErrRes?.error || pErrRes?.error || aErrRes?.error || sErrRes?.error;
+      const bErrRes = results[1], zErrRes = results[2], kErrRes = results[3], pErrRes = results[4], aErrRes = results[5], sErrRes = results[6], wErrRes = results[7], pauErrRes = results[8];
+      const anyErr = mErr || bErrRes?.error || zErrRes?.error || kErrRes?.error || pErrRes?.error || aErrRes?.error || sErrRes?.error || wErrRes?.error || pauErrRes?.error;
       if (anyErr) {
         setError(`Fehler beim Laden: ${anyErr.message}`);
       } else {
@@ -522,6 +545,8 @@ function BaustellenplanungInnen() {
         projekte: pErrRes ? (pErrRes.data || []).map(mapProjektRow) : [],
         abwesenheiten: aErrRes ? (aErrRes.data || []).map(mapAbwesenheitRow) : [],
         stundennachweis: sErrRes ? (sErrRes.data || []).map(mapStundennachweisEintragRow) : [],
+        arbeitszeiten: wErrRes ? (wErrRes.data || []).map(mapArbeitszeitRow) : [],
+        pausen: pauErrRes ? (pauErrRes.data || []).map(mapPauseRow) : [],
       });
     } catch (e) {
       setError("Verbindung zu Supabase fehlgeschlagen. Bitte .env prüfen.");
@@ -678,6 +703,71 @@ function BaustellenplanungInnen() {
     const { error: err } = await supabase.from("abwesenheiten").delete().eq("id", id);
     if (err) { setError(`Fehler beim Löschen: ${err.message}`); return; }
     setData((d) => ({ ...d, abwesenheiten: d.abwesenheiten.filter((a) => a.id !== id) }));
+  };
+
+  // --- Stempeluhr (pointeuse) ---
+  // Un seul enregistrement Beginn/Ende par employé et par jour (le premier
+  // "Arbeit beginnen" du jour, le dernier "Arbeit beenden" du jour) — pas
+  // par rendez-vous, pour éviter de multiplier les clics.
+  const stempelBeginn = async (mitarbeiterId) => {
+    const heute = fmt(new Date());
+    const jetzt = new Date().toTimeString().slice(0, 5);
+    const bestehend = data.arbeitszeiten.find((a) => a.mitarbeiterId === mitarbeiterId && a.datum === heute);
+    const { data: row, error: err } = await supabase
+      .from("arbeitszeiten")
+      .upsert({ mitarbeiter_id: mitarbeiterId, datum: heute, beginn: bestehend?.beginn || jetzt }, { onConflict: "mitarbeiter_id,datum" })
+      .select()
+      .single();
+    if (err) { setError(`Fehler beim Stempeln: ${err.message}`); return; }
+    const neu = mapArbeitszeitRow(row);
+    setData((d) => ({ ...d, arbeitszeiten: [neu, ...d.arbeitszeiten.filter((a) => a.id !== neu.id)] }));
+  };
+  const stempelEnde = async (mitarbeiterId) => {
+    const heute = fmt(new Date());
+    const jetzt = new Date().toTimeString().slice(0, 5);
+    const { data: row, error: err } = await supabase
+      .from("arbeitszeiten")
+      .upsert({ mitarbeiter_id: mitarbeiterId, datum: heute, ende: jetzt }, { onConflict: "mitarbeiter_id,datum" })
+      .select()
+      .single();
+    if (err) { setError(`Fehler beim Stempeln: ${err.message}`); return; }
+    const neu = mapArbeitszeitRow(row);
+    setData((d) => ({ ...d, arbeitszeiten: [neu, ...d.arbeitszeiten.filter((a) => a.id !== neu.id)] }));
+  };
+  // Saisie/correction manuelle (rattrapage d'un oubli, ou ajustement).
+  const nachtragenArbeitszeit = async (mitarbeiterId, datum, beginn, ende) => {
+    const { data: row, error: err } = await supabase
+      .from("arbeitszeiten")
+      .upsert({ mitarbeiter_id: mitarbeiterId, datum, beginn: beginn || null, ende: ende || null }, { onConflict: "mitarbeiter_id,datum" })
+      .select()
+      .single();
+    if (err) { setError(`Fehler beim Speichern: ${err.message}`); return false; }
+    const neu = mapArbeitszeitRow(row);
+    setData((d) => ({ ...d, arbeitszeiten: [neu, ...d.arbeitszeiten.filter((a) => a.id !== neu.id)] }));
+    return true;
+  };
+  const pauseBeginnen = async (mitarbeiterId, motiv) => {
+    const heute = fmt(new Date());
+    const jetzt = new Date().toTimeString().slice(0, 5);
+    const { data: row, error: err } = await supabase
+      .from("pausen")
+      .insert({ mitarbeiter_id: mitarbeiterId, datum: heute, beginn: jetzt, motiv: motiv || "" })
+      .select()
+      .single();
+    if (err) { setError(`Fehler beim Pausieren: ${err.message}`); return; }
+    setData((d) => ({ ...d, pausen: [mapPauseRow(row), ...d.pausen] }));
+  };
+  const pauseBeenden = async (pauseId) => {
+    const jetzt = new Date().toTimeString().slice(0, 5);
+    const { data: row, error: err } = await supabase
+      .from("pausen")
+      .update({ ende: jetzt })
+      .eq("id", pauseId)
+      .select()
+      .single();
+    if (err) { setError(`Fehler beim Beenden der Pause: ${err.message}`); return; }
+    const neu = mapPauseRow(row);
+    setData((d) => ({ ...d, pausen: d.pausen.map((p) => (p.id === neu.id ? neu : p)) }));
   };
 
   // Remplace intégralement les lignes sauvegardées pour un employé/mois donné
@@ -1162,6 +1252,68 @@ function BaustellenplanungInnen() {
     return !m || !m.privatFuer || m.privatFuer === currentUserId;
   });
 
+  // Jours passés (30 derniers jours) où j'avais au moins un rendez-vous
+  // planifié, mais où la pointeuse n'a pas d'heure de début ET de fin
+  // complète — à faire confirmer/rattraper.
+  const fehlendeArbeitszeitTage = (() => {
+    if (!currentUserId) return [];
+    const debutSemaineEnCours = fmt(startOfWeek(new Date()));
+    const limite = fmt(addDays(new Date(), -30));
+    const tage = new Map(); // datum -> [{ kunde }]
+    data.baustellen.forEach((b) => {
+      (b.zuweisungen || []).forEach((z) => {
+        if (z.mitarbeiterId !== currentUserId) return;
+        for (const ds of alleTageZwischen(z.beginn, z.ende)) {
+          // Seules les semaines déjà terminées sont concernées — pas la
+          // semaine en cours, dont les jours peuvent encore être pointés
+          // normalement d'ici la fin de la semaine.
+          if (ds >= debutSemaineEnCours || ds < limite) continue;
+          // Un jour où l'employé est enregistré absent (n'importe quel
+          // motif) toute la journée n'a pas besoin d'être documenté.
+          const estAbsentToutLeJour = data.abwesenheiten.some((a) => a.mitarbeiterId === currentUserId && a.beginn <= ds && ds <= a.ende);
+          if (estAbsentToutLeJour) continue;
+          if (!tage.has(ds)) tage.set(ds, []);
+          tage.get(ds).push(b.kunde);
+        }
+      });
+    });
+    return Array.from(tage.entries())
+      .filter(([ds]) => {
+        const a = data.arbeitszeiten.find((aa) => aa.mitarbeiterId === currentUserId && aa.datum === ds);
+        return !a || !a.beginn || !a.ende;
+      })
+      .map(([datum, kunden]) => ({ datum, kunden }))
+      .sort((a, b) => (a.datum < b.datum ? -1 : 1));
+  })();
+
+  // Semaines déjà terminées où j'avais des rendez-vous, mais où le
+  // Stundennachweis (Wochendetail) n'a jamais été enregistré — pour éviter
+  // d'attendre la fin du mois et n'avoir plus que de vagues souvenirs.
+  const nichtGespeicherteWochen = (() => {
+    if (!currentUserId) return [];
+    const debutSemaineEnCours = fmt(startOfWeek(new Date()));
+    const limite = fmt(addDays(new Date(), -56)); // ~8 dernières semaines
+    const wochenMitTermin = new Map(); // "KW-Jahr" -> { kw, jahr, beginn, ende }
+    data.baustellen.forEach((b) => {
+      (b.zuweisungen || []).forEach((z) => {
+        if (z.mitarbeiterId !== currentUserId) return;
+        for (const ds of alleTageZwischen(z.beginn, z.ende)) {
+          if (ds >= debutSemaineEnCours || ds < limite) continue;
+          const dateObj = new Date(ds + "T00:00:00");
+          const wochenStart = fmt(startOfWeek(dateObj));
+          const key = wochenStart;
+          if (!wochenMitTermin.has(key)) {
+            wochenMitTermin.set(key, { kw: getWeekNumber(dateObj), beginn: wochenStart, ende: fmt(addDays(startOfWeek(dateObj), 6)) });
+          }
+        }
+      });
+    });
+    return Array.from(wochenMitTermin.values())
+      .filter((w) => !data.stundennachweis.some((e) => e.mitarbeiterId === currentUserId && e.datum >= w.beginn && e.datum <= w.ende))
+      .sort((a, b) => (a.beginn < b.beginn ? -1 : 1));
+  })();
+
+
   const baustellenFor = (date) =>
     data.baustellen.filter((b) => {
       if (!isAdmin) {
@@ -1373,6 +1525,41 @@ function BaustellenplanungInnen() {
         </div>
 
         <div style={{ padding: 12, borderTop: `1px solid ${COLORS.bgDarkAlt}`, display: "flex", flexDirection: "column", gap: 8 }}>
+          <StempeluhrWidget
+            mitarbeiterId={currentUserId}
+            arbeitszeiten={data.arbeitszeiten}
+            pausen={data.pausen}
+            vorwocheOffeneTage={fehlendeArbeitszeitTage}
+            onBeginn={() => stempelBeginn(currentUserId)}
+            onEnde={() => stempelEnde(currentUserId)}
+            onPauseBeginnen={(motiv) => pauseBeginnen(currentUserId, motiv)}
+            onPauseBeenden={(pauseId) => pauseBeenden(pauseId)}
+            onNachtragenOeffnen={() => setArbeitszeitModalGeschlossen(false)}
+          />
+          {nichtGespeicherteWochen.length > 0 && !stundennachweisErinnerungGeschlossen && (
+            <div style={{ background: "#3A2A18", border: "1px solid #6B4A22", borderRadius: 8, padding: "9px 10px" }}>
+              <div style={{ fontSize: 11, color: "#F0C77E", fontWeight: 700, marginBottom: 4 }}>
+                ⚠ Stundennachweis fehlt für {nichtGespeicherteWochen.length} Woche{nichtGespeicherteWochen.length !== 1 ? "n" : ""}
+              </div>
+              <div style={{ fontSize: 10.5, color: COLORS.textLightMuted, marginBottom: 7 }}>
+                {nichtGespeicherteWochen.map((w) => `KW-${String(w.kw).padStart(2, "0")}`).join(", ")} — bitte zeitnah speichern, nicht bis Monatsende warten.
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button
+                  onClick={() => { setPage("ressourcen"); setStundennachweisErinnerungGeschlossen(true); }}
+                  style={{ flex: 1, background: COLORS.accent, color: "#fff", border: "none", borderRadius: 6, padding: "6px 0", fontSize: 11, fontWeight: 700, cursor: "pointer" }}
+                >
+                  Jetzt prüfen
+                </button>
+                <button
+                  onClick={() => setStundennachweisErinnerungGeschlossen(true)}
+                  style={{ background: "transparent", color: COLORS.textLightMuted, border: "none", fontSize: 11, cursor: "pointer" }}
+                >
+                  Später
+                </button>
+              </div>
+            </div>
+          )}
           <div style={{ fontSize: 12, color: COLORS.textLightMuted, padding: "0 2px" }}>
             Angemeldet als <strong style={{ color: COLORS.textLight }}>{me.name}</strong>{isAdmin ? " (Admin)" : ""}
           </div>
@@ -1534,6 +1721,8 @@ function BaustellenplanungInnen() {
             mitarbeiter={sichtbareMitarbeiter}
             abwesenheiten={sichtbareAbwesenheiten}
             stundennachweis={data.stundennachweis}
+            arbeitszeiten={data.arbeitszeiten}
+            pausen={data.pausen}
             isAdmin={isAdmin}
             currentUserId={currentUserId}
             onOpenSidebar={() => setSidebarOpen(true)}
@@ -1582,6 +1771,14 @@ function BaustellenplanungInnen() {
           onSave={saveProjekt}
           onDelete={projektForm.id ? deleteProjekt : null}
           onClose={() => setProjektModalOpen(false)}
+        />
+      )}
+
+      {fehlendeArbeitszeitTage.length > 0 && !arbeitszeitModalGeschlossen && (
+        <ArbeitszeitNachtragenModal
+          tage={fehlendeArbeitszeitTage}
+          onSave={(datum, beginn, ende) => nachtragenArbeitszeit(currentUserId, datum, beginn, ende)}
+          onClose={() => setArbeitszeitModalGeschlossen(true)}
         />
       )}
 
@@ -3133,7 +3330,7 @@ function KundenListPage({ kunden, baustellen, onOpenSidebar, onNew, onEdit, erro
   );
 }
 
-function RessourcenPage({ baustellen, mitarbeiter, abwesenheiten, stundennachweis, isAdmin, currentUserId, onOpenSidebar, onBaustelleClick, onAddAbwesenheit, onRemoveAbwesenheit, onSaveStundennachweis, error }) {
+function RessourcenPage({ baustellen, mitarbeiter, abwesenheiten, stundennachweis, arbeitszeiten, pausen, isAdmin, currentUserId, onOpenSidebar, onBaustelleClick, onAddAbwesenheit, onRemoveAbwesenheit, onSaveStundennachweis, error }) {
   const [modus, setModus] = useState("verfuegbarkeit"); // verfuegbarkeit | stunden | abwesenheiten
 
   return (
@@ -3184,6 +3381,8 @@ function RessourcenPage({ baustellen, mitarbeiter, abwesenheiten, stundennachwei
             baustellen={baustellen}
             abwesenheiten={abwesenheiten}
             stundennachweis={stundennachweis}
+            arbeitszeiten={arbeitszeiten}
+            pausen={pausen}
             isAdmin={isAdmin}
             currentUserId={currentUserId}
             onSave={onSaveStundennachweis}
@@ -3383,6 +3582,161 @@ function StundenUebersicht({ baustellen, mitarbeiter, abwesenheiten }) {
   );
 }
 
+function StempeluhrWidget({ mitarbeiterId, arbeitszeiten, pausen, vorwocheOffeneTage, onBeginn, onEnde, onPauseBeginnen, onPauseBeenden, onNachtragenOeffnen }) {
+  const [laedt, setLaedt] = useState(false);
+  const heute = fmt(new Date());
+  const heutigeZeit = arbeitszeiten.find((a) => a.mitarbeiterId === mitarbeiterId && a.datum === heute);
+  const heutigePausen = pausen.filter((p) => p.mitarbeiterId === mitarbeiterId && p.datum === heute);
+  const offenePause = heutigePausen.find((p) => !p.ende);
+  const gesamtPauseMin = heutigePausen.reduce((s, p) => {
+    if (!p.beginn || !p.ende) return s;
+    const [bh, bm] = p.beginn.split(":").map(Number);
+    const [eh, em] = p.ende.split(":").map(Number);
+    return s + Math.max(0, eh * 60 + em - (bh * 60 + bm));
+  }, 0);
+
+  const klick = async (fn) => {
+    setLaedt(true);
+    await fn();
+    setLaedt(false);
+  };
+
+  const btnStyle = (bg) => ({
+    display: "flex", alignItems: "center", justifyContent: "center", gap: 7, width: "100%",
+    background: bg, color: "#fff", border: "none", borderRadius: 8, padding: "9px 0",
+    fontSize: 13, fontWeight: 700, cursor: "pointer", opacity: laedt ? 0.6 : 1,
+  });
+
+  // Une nouvelle journée démarre toujours librement — sauf si une semaine
+  // PRÉCÉDENTE (déjà terminée) n'a pas été entièrement documentée : dans ce
+  // cas, "Arbeit beginnen" reste bloqué jusqu'à régularisation.
+  if (!heutigeZeit?.beginn) {
+    if (vorwocheOffeneTage && vorwocheOffeneTage.length > 0) {
+      return (
+        <div style={{ background: "#3A2018", border: "1px solid #7A3A2A", borderRadius: 8, padding: "9px 10px" }}>
+          <div style={{ fontSize: 11, color: "#F0A07E", fontWeight: 700, marginBottom: 5 }}>
+            🔒 Vorwoche nicht dokumentiert
+          </div>
+          <div style={{ fontSize: 10.5, color: COLORS.textLightMuted, marginBottom: 7 }}>
+            Bitte zuerst die fehlenden Tage der letzten Woche nachtragen, bevor die neue Woche beginnen kann.
+          </div>
+          <button onClick={onNachtragenOeffnen} style={{ ...btnStyle(COLORS.accent) }}>
+            Jetzt nachtragen
+          </button>
+        </div>
+      );
+    }
+    return (
+      <button onClick={() => klick(onBeginn)} disabled={laedt} style={btnStyle(COLORS.brandGreen)}>
+        <Clock size={14} /> Arbeit beginnen
+      </button>
+    );
+  }
+
+  if (!heutigeZeit.ende) {
+    if (offenePause) {
+      return (
+        <div style={{ background: "#2A3038", borderRadius: 8, padding: "8px 10px" }}>
+          <div style={{ fontSize: 11, color: COLORS.textLightMuted, marginBottom: 6 }}>
+            ⏸ Pause seit {offenePause.beginn}{offenePause.motiv ? ` (${offenePause.motiv})` : ""}
+          </div>
+          <button onClick={() => klick(() => onPauseBeenden(offenePause.id))} disabled={laedt} style={btnStyle(COLORS.brandGreen)}>
+            <Clock size={14} /> Pause beenden
+          </button>
+        </div>
+      );
+    }
+    return (
+      <div style={{ background: "#2A3038", borderRadius: 8, padding: "8px 10px" }}>
+        <div style={{ fontSize: 11, color: COLORS.textLightMuted, marginBottom: 6 }}>
+          🟢 Im Dienst seit {heutigeZeit.beginn}
+          {gesamtPauseMin > 0 && ` · ${gesamtPauseMin} Min. Pause bisher`}
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={() => klick(() => onPauseBeginnen(""))} disabled={laedt} style={{ ...btnStyle("#4A5568"), flex: 1 }}>
+            Pause
+          </button>
+          <button onClick={() => klick(onEnde)} disabled={laedt} style={{ ...btnStyle(COLORS.accent), flex: 1.4 }}>
+            <Clock size={14} /> Beenden
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: "#2A3038", borderRadius: 8, padding: "9px 10px", fontSize: 11.5, color: COLORS.textLightMuted, textAlign: "center" }}>
+      ✓ Heute: {heutigeZeit.beginn} – {heutigeZeit.ende}
+      {gesamtPauseMin > 0 && ` (${gesamtPauseMin} Min. Pause)`}
+    </div>
+  );
+}
+
+function ArbeitszeitNachtragenModal({ tage, onSave, onClose }) {
+  const [werte, setWerte] = useState(() =>
+    Object.fromEntries(tage.map((t) => [t.datum, { beginn: "", ende: "", nichtGearbeitet: false }]))
+  );
+  const [speichertGerade, setSpeichertGerade] = useState(false);
+
+  const update = (datum, fields) => setWerte((w) => ({ ...w, [datum]: { ...w[datum], ...fields } }));
+
+  const alleAusgefuellt = tage.every((t) => {
+    const v = werte[t.datum];
+    return v.nichtGearbeitet || (v.beginn && v.ende);
+  });
+
+  const speichern = async () => {
+    setSpeichertGerade(true);
+    for (const t of tage) {
+      const v = werte[t.datum];
+      if (v.nichtGearbeitet) continue;
+      await onSave(t.datum, v.beginn, v.ende);
+    }
+    setSpeichertGerade(false);
+    onClose();
+  };
+
+  return (
+    <div style={overlayStyle}>
+      <div style={{ ...modalStyle, maxWidth: 480 }}>
+        <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 6 }}>⏱ Vergessene Zeiterfassung</div>
+        <div style={{ fontSize: 12.5, color: COLORS.textMuted, marginBottom: 16 }}>
+          An folgenden Tagen gab es Termine, aber keine vollständige Zeiterfassung. Bitte kurz nachtragen:
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 18, maxHeight: 360, overflowY: "auto" }}>
+          {tage.map((t) => {
+            const v = werte[t.datum];
+            return (
+              <div key={t.datum} style={{ background: "#F6F5F2", borderRadius: 8, padding: 12 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>{formatDatumDE(t.datum)}</div>
+                <div style={{ fontSize: 11.5, color: COLORS.textMuted, marginBottom: 8 }}>
+                  {[...new Set(t.kunden)].join(", ")}
+                </div>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: COLORS.textMuted, marginBottom: 8 }}>
+                  <input type="checkbox" checked={v.nichtGearbeitet} onChange={(e) => update(t.datum, { nichtGearbeitet: e.target.checked })} />
+                  Nicht gearbeitet an diesem Tag
+                </label>
+                {!v.nichtGearbeitet && (
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input type="time" value={v.beginn} onChange={(e) => update(t.datum, { beginn: e.target.value })} style={{ ...inputStyle, flex: 1 }} placeholder="Beginn" />
+                    <input type="time" value={v.ende} onChange={(e) => update(t.datum, { ende: e.target.value })} style={{ ...inputStyle, flex: 1 }} placeholder="Ende" />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={onClose} style={btnSecondary}>Später</button>
+          <button onClick={speichern} disabled={!alleAusgefuellt || speichertGerade} style={{ ...btnPrimary, flex: 1, opacity: alleAusgefuellt ? 1 : 0.5 }}>
+            {speichertGerade ? "…" : "Speichern"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AbwesenheitenPage({ mitarbeiter, abwesenheiten, isAdmin, currentUserId, onAdd, onRemove }) {
   const heute = fmt(new Date());
   const [formOffen, setFormOffen] = useState(false);
@@ -3500,7 +3854,7 @@ function AbwesenheitenPage({ mitarbeiter, abwesenheiten, isAdmin, currentUserId,
   );
 }
 
-function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundennachweis, isAdmin, currentUserId, onSave }) {
+function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundennachweis, arbeitszeiten, pausen, isAdmin, currentUserId, onSave }) {
   const heute = new Date();
   const [mitarbeiterId, setMitarbeiterId] = useState(isAdmin ? (mitarbeiter[0]?.id || "") : currentUserId || "");
   const [jahr, setJahr] = useState(heute.getFullYear());
@@ -3524,6 +3878,40 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
     for (const ds of alleTageZwischen(monatBeginn, monatEnde)) {
       const roh = eintraegeFuerTag(mitarbeiterId, ds, baustellen);
       if (roh.length === 0) continue;
+
+      // Priorité aux vraies heures pointées (Stempeluhr) si elles existent
+      // pour ce jour : elles définissent le total net réel, réparti entre
+      // les tâches du jour (au prorata de leurs propres heures si connues,
+      // sinon également).
+      const echtePointage = (arbeitszeiten || []).find((a) => a.mitarbeiterId === mitarbeiterId && a.datum === ds && a.beginn && a.ende);
+      if (echtePointage) {
+        const [bh, bm] = echtePointage.beginn.split(":").map(Number);
+        const [eh, em] = echtePointage.ende.split(":").map(Number);
+        const pausenDesTages = (pausen || []).filter((p) => p.mitarbeiterId === mitarbeiterId && p.datum === ds && p.beginn && p.ende);
+        const echtePauseMin = pausenDesTages.reduce((s, p) => {
+          const [ph, pm] = p.beginn.split(":").map(Number);
+          const [qh, qm] = p.ende.split(":").map(Number);
+          return s + Math.max(0, qh * 60 + qm - (ph * 60 + pm));
+        }, 0);
+        const pauseStd = pausenDesTages.length > 0 ? echtePauseMin / 60 : 1; // pause réelle si connue, sinon 60 min par défaut
+        let totalNet = eh + em / 60 - (bh + bm / 60) - pauseStd;
+        if (totalNet < 0) totalNet = 0;
+        const mitZeiten = roh.filter((e) => e.startzeit && e.endzeit);
+        const poids = mitZeiten.length === roh.length && roh.length > 0
+          ? roh.map((e) => {
+              const [sh, sm] = e.startzeit.split(":").map(Number);
+              const [eh2, em2] = e.endzeit.split(":").map(Number);
+              return Math.max(0.01, eh2 + em2 / 60 - (sh + sm / 60));
+            })
+          : roh.map(() => 1);
+        const poidsTotal = poids.reduce((s, p) => s + p, 0) || 1;
+        roh.forEach((e, i) => {
+          const stunden = Math.round(totalNet * (poids[i] / poidsTotal) * 4) / 4;
+          neu.push({ id: `auto-${n++}`, datum: ds, kunde: e.kunde, leistung: e.leistung, stunden });
+        });
+        continue;
+      }
+
       const mitZeiten = roh.filter((e) => e.startzeit && e.endzeit);
       if (mitZeiten.length === 0) {
         // Aucune heure précisée sur aucune tâche du jour : on suppose une
