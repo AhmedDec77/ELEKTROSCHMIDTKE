@@ -493,7 +493,7 @@ function BaustellenplanungInnen() {
   const [data, setData] = useState({ mitarbeiter: [], baustellen: [], kunden: [], projekte: [], abwesenheiten: [], stundennachweis: [], arbeitszeiten: [], pausen: [] });
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(null);
-  const [page, setPage] = useState("kalender"); // kalender | projekte | kunden
+  const [page, setPage] = useState("pointeuse"); // pointeuse | kalender | projekte | kunden
 
   const [view, setView] = useState("woche"); // tag | woche | monat
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -1444,6 +1444,7 @@ function BaustellenplanungInnen() {
 
         <div style={{ padding: "0 10px 10px", display: "flex", flexDirection: "column", gap: 2 }}>
           {[
+            ["pointeuse", Clock, "Pointage"],
             ["kalender", CalendarIcon, "Kalender"],
             ["projekte", ClipboardList, "Projekte"],
             ["kunden", Building2, "Kunden"],
@@ -1603,6 +1604,22 @@ function BaustellenplanungInnen() {
 
       {/* MAIN */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+        {page === "pointeuse" && (
+          <PointeuseSeite
+            me={me}
+            baustellen={data.baustellen}
+            arbeitszeiten={data.arbeitszeiten}
+            pausen={data.pausen}
+            vorwocheOffeneTage={fehlendeArbeitszeitTage}
+            onOpenSidebar={() => setSidebarOpen(true)}
+            onBeginn={() => stempelBeginn(currentUserId)}
+            onEnde={() => stempelEnde(currentUserId)}
+            onPauseBeginnen={(motiv) => pauseBeginnen(currentUserId, motiv)}
+            onPauseBeenden={(pauseId) => pauseBeenden(pauseId)}
+            onNachtragenOeffnen={() => setArbeitszeitModalGeschlossen(false)}
+            onBaustelleClick={openEditBaustelle}
+          />
+        )}
         {page === "kalender" && (
           <>
             <div className="app-topbar" style={{ background: COLORS.card, borderBottom: `1px solid ${COLORS.border}`, padding: "14px 22px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
@@ -3587,6 +3604,136 @@ function StundenUebersicht({ baustellen, mitarbeiter, abwesenheiten }) {
             </div>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+function PointeuseSeite({ me, baustellen, arbeitszeiten, pausen, vorwocheOffeneTage, onOpenSidebar, onBeginn, onEnde, onPauseBeginnen, onPauseBeenden, onNachtragenOeffnen, onBaustelleClick }) {
+  const [laedt, setLaedt] = useState(false);
+  const heute = fmt(new Date());
+  const heutigeZeit = (arbeitszeiten || []).find((a) => a.mitarbeiterId === me.id && a.datum === heute);
+  const heutigePausen = (pausen || []).filter((p) => p.mitarbeiterId === me.id && p.datum === heute);
+  const offenePause = heutigePausen.find((p) => !p.ende);
+  const gesamtPauseMin = heutigePausen.reduce((s, p) => {
+    if (!p.beginn || !p.ende) return s;
+    const [bh, bm] = p.beginn.split(":").map(Number);
+    const [eh, em] = p.ende.split(":").map(Number);
+    return s + Math.max(0, eh * 60 + em - (bh * 60 + bm));
+  }, 0);
+  const heutigeTermine = (baustellen || [])
+    .filter((b) => (b.zuweisungen || []).some((z) => z.mitarbeiterId === me.id && isZuweisungAktivAm(z, new Date())))
+    .sort((a, b) => (a.startzeit || "").localeCompare(b.startzeit || ""));
+
+  const klick = async (fn) => {
+    setLaedt(true);
+    await fn();
+    setLaedt(false);
+  };
+
+  const grossBtn = (bg) => ({
+    display: "flex", alignItems: "center", justifyContent: "center", gap: 10, width: "100%",
+    background: bg, color: "#fff", border: "none", borderRadius: 14, padding: "20px 0",
+    fontSize: 18, fontWeight: 800, cursor: "pointer", opacity: laedt ? 0.6 : 1,
+  });
+
+  let inhalt;
+  if (vorwocheOffeneTage && vorwocheOffeneTage.length > 0 && !heutigeZeit?.beginn) {
+    inhalt = (
+      <div style={{ background: "#FDECEA", border: "1px solid #F3C7C0", borderRadius: 14, padding: 22, textAlign: "center" }}>
+        <div style={{ fontSize: 32, marginBottom: 8 }}>🔒</div>
+        <div style={{ fontSize: 16, fontWeight: 800, color: "#B42318", marginBottom: 6 }}>Vorwoche nicht dokumentiert</div>
+        <div style={{ fontSize: 13, color: COLORS.textMuted, marginBottom: 16 }}>
+          Bitte zuerst die fehlenden Tage der letzten Woche nachtragen, bevor die neue Woche beginnen kann.
+        </div>
+        <button onClick={onNachtragenOeffnen} style={grossBtn(COLORS.accent)}>Jetzt nachtragen</button>
+      </div>
+    );
+  } else if (!heutigeZeit?.beginn) {
+    inhalt = (
+      <button onClick={() => klick(onBeginn)} disabled={laedt} style={grossBtn(COLORS.brandGreen)}>
+        <Clock size={22} /> Arbeit beginnen
+      </button>
+    );
+  } else if (!heutigeZeit.ende) {
+    if (offenePause) {
+      inhalt = (
+        <div style={{ background: "#F6F5F2", borderRadius: 14, padding: 22, textAlign: "center" }}>
+          <div style={{ fontSize: 14, color: COLORS.textMuted, marginBottom: 14 }}>
+            ⏸ Pause seit <strong>{offenePause.beginn}</strong>{offenePause.motiv ? ` (${offenePause.motiv})` : ""}
+          </div>
+          <button onClick={() => klick(() => onPauseBeenden(offenePause.id))} disabled={laedt} style={grossBtn(COLORS.brandGreen)}>
+            <Clock size={22} /> Pause beenden
+          </button>
+        </div>
+      );
+    } else {
+      inhalt = (
+        <div style={{ background: "#F6F5F2", borderRadius: 14, padding: 22, textAlign: "center" }}>
+          <div style={{ fontSize: 14, color: COLORS.textMuted, marginBottom: 14 }}>
+            🟢 Im Dienst seit <strong>{heutigeZeit.beginn}</strong>
+            {gesamtPauseMin > 0 && ` · ${gesamtPauseMin} Min. Pause bisher`}
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={() => klick(() => onPauseBeginnen(""))} disabled={laedt} style={{ ...grossBtn("#4A5568"), flex: 1 }}>
+              Pause
+            </button>
+            <button onClick={() => klick(onEnde)} disabled={laedt} style={{ ...grossBtn(COLORS.accent), flex: 1.4 }}>
+              <Clock size={22} /> Beenden
+            </button>
+          </div>
+        </div>
+      );
+    }
+  } else {
+    inhalt = (
+      <div style={{ background: "#F0F7F0", border: `1px solid ${hexToRgba(COLORS.brandGreen, 0.3)}`, borderRadius: 14, padding: 22, textAlign: "center" }}>
+        <div style={{ fontSize: 32, marginBottom: 6 }}>✓</div>
+        <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 4 }}>Heute erledigt</div>
+        <div style={{ fontSize: 13, color: COLORS.textMuted }}>
+          {heutigeZeit.beginn} – {heutigeZeit.ende}{gesamtPauseMin > 0 && ` (${gesamtPauseMin} Min. Pause)`}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ flex: 1, overflowY: "auto", background: COLORS.bgMain }}>
+      <div className="app-topbar" style={{ background: COLORS.card, borderBottom: `1px solid ${COLORS.border}`, padding: "14px 22px", display: "flex", alignItems: "center", gap: 14 }}>
+        <button className="mobile-menu-btn" onClick={onOpenSidebar} style={{ display: "none", border: "none", background: "transparent", cursor: "pointer" }}>
+          <MenuIcon size={22} />
+        </button>
+        <div style={{ fontSize: 18, fontWeight: 800 }}>Hallo, {me.name}</div>
+      </div>
+      <div style={{ padding: 22, maxWidth: 480, margin: "0 auto" }}>
+        {inhalt}
+
+        {heutigeTermine.length > 0 && (
+          <div style={{ marginTop: 24 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase", marginBottom: 8 }}>
+              Heute geplant
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {heutigeTermine.map((b) => (
+                <div
+                  key={b.id}
+                  onClick={() => onBaustelleClick(b)}
+                  style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 12, cursor: "pointer" }}
+                >
+                  <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 2 }}>{b.kunde}</div>
+                  {formatAdresse(b) && (
+                    <div style={{ fontSize: 11.5, color: COLORS.textMuted, display: "flex", alignItems: "center", gap: 4 }}>
+                      <MapPin size={10} /> {formatAdresse(b)}
+                    </div>
+                  )}
+                  {b.startzeit && b.endzeit && (
+                    <div style={{ fontSize: 11.5, color: COLORS.textMuted, marginTop: 2 }}>{b.startzeit} – {b.endzeit}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
