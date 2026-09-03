@@ -1534,18 +1534,6 @@ function BaustellenplanungInnen() {
         </div>
 
         <div style={{ padding: 12, borderTop: `1px solid ${COLORS.bgDarkAlt}`, display: "flex", flexDirection: "column", gap: 8 }}>
-          <StempeluhrWidget
-            mitarbeiterId={currentUserId}
-            arbeitszeiten={data.arbeitszeiten}
-            pausen={data.pausen}
-            vorwocheOffeneTage={fehlendeArbeitszeitTage}
-            onBeginn={(zeit) => stempelBeginn(currentUserId, zeit)}
-            onEnde={() => stempelEnde(currentUserId)}
-            onPauseBeginnen={(motiv) => pauseBeginnen(currentUserId, motiv)}
-            onPauseBeenden={(pauseId) => pauseBeenden(pauseId)}
-            onNachtragenOeffnen={() => setArbeitszeitModalGeschlossen(false)}
-            onNachtragHeute={(beginn, ende) => nachtragenArbeitszeit(currentUserId, fmt(new Date()), beginn, ende)}
-          />
           {nichtGespeicherteWochen.length > 0 && !stundennachweisErinnerungGeschlossen && (
             <div style={{ background: "#3A2A18", border: "1px solid #6B4A22", borderRadius: 8, padding: "9px 10px" }}>
               <div style={{ fontSize: 11, color: "#F0C77E", fontWeight: 700, marginBottom: 4 }}>
