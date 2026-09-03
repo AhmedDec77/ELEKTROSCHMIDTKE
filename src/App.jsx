@@ -1448,7 +1448,7 @@ function BaustellenplanungInnen() {
 
         <div style={{ padding: "0 10px 10px", display: "flex", flexDirection: "column", gap: 2 }}>
           {[
-            ["pointeuse", Clock, "Pointage"],
+            ["pointeuse", Clock, "Zeiterfassung"],
             ["kalender", CalendarIcon, "Kalender"],
             ["projekte", ClipboardList, "Projekte"],
             ["kunden", Building2, "Kunden"],
