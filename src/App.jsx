@@ -3779,8 +3779,16 @@ function PointeuseSeite({ me, baustellen, arbeitszeiten, pausen, vorwocheOffeneT
   return (
     <div style={{ flex: 1, overflowY: "auto", background: COLORS.bgMain }}>
       <div className="app-topbar" style={{ background: COLORS.card, borderBottom: `1px solid ${COLORS.border}`, padding: "14px 22px", display: "flex", alignItems: "center", gap: 14 }}>
-        <button className="mobile-menu-btn" onClick={onOpenSidebar} style={{ display: "none", border: "none", background: "transparent", cursor: "pointer" }}>
-          <MenuIcon size={22} />
+        <button
+          className="hamburger-btn"
+          onClick={onOpenSidebar}
+          style={{
+            alignItems: "center", justifyContent: "center", width: 44, height: 44, borderRadius: 10,
+            border: `1px solid ${COLORS.border}`, background: COLORS.card, cursor: "pointer", color: COLORS.textDark,
+            flexShrink: 0, WebkitTapHighlightColor: "transparent",
+          }}
+        >
+          <MenuIcon size={20} />
         </button>
         <div style={{ fontSize: 18, fontWeight: 800 }}>Hallo, {me.name}</div>
       </div>
