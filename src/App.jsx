@@ -120,6 +120,10 @@ const ARBEITSTAG_START = "08:00";
 const ARBEITSTAG_ENDE = "17:00";
 const ARBEITSTAG_ENDE_EINZELTAG = "19:00"; // tolérance si le Termin ne dure qu'un einziger Tag
 const STANDARD_TAGESKAPAZITAET = 8; // 08:00–17:00, moins 1h de pause déjeuner
+// Date fixe à partir de laquelle le suivi "Stundennachweis nicht gespeichert"
+// commence — les semaines antérieures (avant l'existence de cette fonktion)
+// ne sont jamais signalées.
+const ZEITERFASSUNG_TRACKING_START = "2026-09-03";
 
 // Nombre d'heures que représente un Termin pour UNE journée : basé sur
 // l'heure de début/fin si précisée. Recadré sur 08:00–17:00, sauf si le
@@ -1258,7 +1262,7 @@ function BaustellenplanungInnen() {
   const fehlendeArbeitszeitTage = (() => {
     if (!currentUserId) return [];
     const debutSemaineEnCours = fmt(startOfWeek(new Date()));
-    const limite = fmt(addDays(new Date(), -30));
+    const limite = ZEITERFASSUNG_TRACKING_START; // pas d'historique avant la mise en place de la pointeuse
     const tage = new Map(); // datum -> [{ kunde }]
     data.baustellen.forEach((b) => {
       (b.zuweisungen || []).forEach((z) => {
@@ -1292,7 +1296,7 @@ function BaustellenplanungInnen() {
   const nichtGespeicherteWochen = (() => {
     if (!currentUserId) return [];
     const debutSemaineEnCours = fmt(startOfWeek(new Date()));
-    const limite = fmt(addDays(new Date(), -56)); // ~8 dernières semaines
+    const limite = ZEITERFASSUNG_TRACKING_START; // pas d'historique avant cette date
     const wochenMitTermin = new Map(); // "KW-Jahr" -> { kw, jahr, beginn, ende }
     data.baustellen.forEach((b) => {
       (b.zuweisungen || []).forEach((z) => {
