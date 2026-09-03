@@ -390,6 +390,34 @@ function mapPauseRow(row) {
     motiv: row.motiv || "",
   };
 }
+function mapAnfrageRow(row) {
+  return {
+    id: row.id,
+    erstelltAm: row.erstellt_am,
+    adresse: row.adresse || "",
+    kunde: row.kunde || "",
+    beschreibung: row.beschreibung || "",
+    kontaktName: row.kontakt_name || "",
+    kontaktTelefon: row.kontakt_telefon || "",
+    status: row.status || "offen",
+    zugewiesenAn: row.zugewiesen_an || null,
+    notiz: row.notiz || "",
+  };
+}
+const ANFRAGE_STATUS_LABEL = {
+  offen: "Offen",
+  angebot_gestellt: "Angebot gestellt",
+  warten_auf_antwort: "Warten auf Antwort",
+  geplant: "Geplant",
+  erledigt: "Erledigt",
+};
+const ANFRAGE_STATUS_FARBE = {
+  offen: "#B45309",
+  angebot_gestellt: "#0B7285",
+  warten_auf_antwort: "#6B46C1",
+  geplant: "#2B6CB0",
+  erledigt: "#2F855A",
+};
 const ABWESENHEIT_FARBE = { urlaub: "#0B7285", krankheit: "#B42318", fortbildung: "#6B46C1" };
 function findeAbwesenheitenFuerZeitraum(mitarbeiterId, beginn, ende, abwesenheiten) {
   return abwesenheiten.filter((a) => a.mitarbeiterId === mitarbeiterId && rangesOverlap(a.beginn, a.ende, beginn, ende));
@@ -495,7 +523,7 @@ class ErrorBoundary extends React.Component {
 }
 
 function BaustellenplanungInnen() {
-  const [data, setData] = useState({ mitarbeiter: [], baustellen: [], kunden: [], projekte: [], abwesenheiten: [], stundennachweis: [], arbeitszeiten: [], pausen: [] });
+  const [data, setData] = useState({ mitarbeiter: [], baustellen: [], kunden: [], projekte: [], abwesenheiten: [], stundennachweis: [], arbeitszeiten: [], pausen: [], anfragen: [] });
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(null);
   const [page, setPage] = useState("pointeuse"); // pointeuse | kalender | projekte | kunden
@@ -512,6 +540,9 @@ function BaustellenplanungInnen() {
   const [newIsAdmin, setNewIsAdmin] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false); // menu mobile
   const [kundeModalOpen, setKundeModalOpen] = useState(false);
+  const EMPTY_ANFRAGE_FORM = { id: null, adresse: "", kunde: "", beschreibung: "", kontaktName: "", kontaktTelefon: "", status: "offen", zugewiesenAn: null, notiz: "" };
+  const [anfrageModalOpen, setAnfrageModalOpen] = useState(false);
+  const [anfrageForm, setAnfrageForm] = useState(EMPTY_ANFRAGE_FORM);
   const [arbeitszeitModalGeschlossen, setArbeitszeitModalGeschlossen] = useState(false);
   const [stundennachweisErinnerungGeschlossen, setStundennachweisErinnerungGeschlossen] = useState(false);
   const [kundeForm, setKundeForm] = useState(EMPTY_KUNDE_FORM);
@@ -535,13 +566,14 @@ function BaustellenplanungInnen() {
           supabase.from("abwesenheiten").select("*").order("beginn", { ascending: false }),
           supabase.from("stundennachweis_eintraege").select("*").order("datum", { ascending: true }),
           supabase.from("arbeitszeiten").select("*").order("datum", { ascending: false }),
-          supabase.from("pausen").select("*").order("datum", { ascending: false })
+          supabase.from("pausen").select("*").order("datum", { ascending: false }),
+          supabase.from("anfragen").select("*").order("erstellt_am", { ascending: false })
         );
       }
       const results = await Promise.all(calls);
       const [{ data: mRows, error: mErr }] = results;
-      const bErrRes = results[1], zErrRes = results[2], kErrRes = results[3], pErrRes = results[4], aErrRes = results[5], sErrRes = results[6], wErrRes = results[7], pauErrRes = results[8];
-      const anyErr = mErr || bErrRes?.error || zErrRes?.error || kErrRes?.error || pErrRes?.error || aErrRes?.error || sErrRes?.error || wErrRes?.error || pauErrRes?.error;
+      const bErrRes = results[1], zErrRes = results[2], kErrRes = results[3], pErrRes = results[4], aErrRes = results[5], sErrRes = results[6], wErrRes = results[7], pauErrRes = results[8], anfErrRes = results[9];
+      const anyErr = mErr || bErrRes?.error || zErrRes?.error || kErrRes?.error || pErrRes?.error || aErrRes?.error || sErrRes?.error || wErrRes?.error || pauErrRes?.error || anfErrRes?.error;
       if (anyErr) {
         setError(`Fehler beim Laden: ${anyErr.message}`);
       } else {
@@ -556,6 +588,7 @@ function BaustellenplanungInnen() {
         stundennachweis: sErrRes ? (sErrRes.data || []).map(mapStundennachweisEintragRow) : [],
         arbeitszeiten: wErrRes ? (wErrRes.data || []).map(mapArbeitszeitRow) : [],
         pausen: pauErrRes ? (pauErrRes.data || []).map(mapPauseRow) : [],
+        anfragen: anfErrRes ? (anfErrRes.data || []).map(mapAnfrageRow) : [],
       });
     } catch (e) {
       setError("Verbindung zu Supabase fehlgeschlagen. Bitte .env prüfen.");
@@ -784,6 +817,37 @@ function BaustellenplanungInnen() {
     setData((d) => ({ ...d, pausen: d.pausen.map((p) => (p.id === neu.id ? neu : p)) }));
   };
 
+  // --- Anfragen (demandes clients entrantes) ---
+  const saveAnfrage = async (form) => {
+    const zeilen = {
+      adresse: form.adresse.trim(),
+      kunde: form.kunde.trim(),
+      beschreibung: form.beschreibung.trim(),
+      kontakt_name: form.kontaktName.trim(),
+      kontakt_telefon: form.kontaktTelefon.trim(),
+      status: form.status || "offen",
+      zugewiesen_an: form.zugewiesenAn || null,
+      notiz: form.notiz.trim(),
+    };
+    if (form.id) {
+      const { data: row, error: err } = await supabase.from("anfragen").update(zeilen).eq("id", form.id).select().single();
+      if (err) { setError(`Fehler beim Speichern: ${err.message}`); return false; }
+      const neu = mapAnfrageRow(row);
+      setData((d) => ({ ...d, anfragen: d.anfragen.map((a) => (a.id === neu.id ? neu : a)) }));
+    } else {
+      const { data: row, error: err } = await supabase.from("anfragen").insert(zeilen).select().single();
+      if (err) { setError(`Fehler beim Speichern: ${err.message}`); return false; }
+      const neu = mapAnfrageRow(row);
+      setData((d) => ({ ...d, anfragen: [neu, ...d.anfragen] }));
+    }
+    return true;
+  };
+  const deleteAnfrage = async (id) => {
+    const { error: err } = await supabase.from("anfragen").delete().eq("id", id);
+    if (err) { setError(`Fehler beim Löschen: ${err.message}`); return; }
+    setData((d) => ({ ...d, anfragen: d.anfragen.filter((a) => a.id !== id) }));
+  };
+
   // Remplace intégralement les lignes sauvegardées pour un employé/mois donné
   // (stratégie simple : on supprime tout ce qui existait pour cette période,
   // puis on réinsère l'état actuel). Retourne true si succès.
@@ -921,6 +985,25 @@ function BaustellenplanungInnen() {
     setForm({ ...norm, projektTitelEingabe: projekt ? projekt.titel : "" });
     setModalOpen(true);
   };
+  const openNewAnfrage = () => { setAnfrageForm(EMPTY_ANFRAGE_FORM); setAnfrageModalOpen(true); };
+  const openEditAnfrage = (a) => { setAnfrageForm(a); setAnfrageModalOpen(true); };
+  const convertAnfrageToTermin = (a) => {
+    const start = fmt(new Date());
+    setForm({
+      ...EMPTY_FORM,
+      id: null,
+      kunde: a.kunde || a.adresse,
+      kontaktName: a.kontaktName,
+      kontaktTelefon: a.kontaktTelefon,
+      beschreibung: a.beschreibung,
+      strasse: a.adresse,
+      beginn: start,
+      ende: start,
+      zuweisungen: a.zugewiesenAn ? [{ mitarbeiterId: a.zugewiesenAn, beginn: start, ende: start }] : [],
+    });
+    setModalOpen(true);
+  };
+
   const findConflicts = (candidateForm) => {
     const conflicts = [];
     for (const z of candidateForm.zuweisungen) {
@@ -1459,6 +1542,7 @@ function BaustellenplanungInnen() {
             ["projekte", ClipboardList, "Projekte"],
             ["kunden", Building2, "Kunden"],
             ["ressourcen", Users, "Ressourcen"],
+            ["anfragen", Phone, "Anfragen"],
           ].map(([key, Icon, label]) => (
             <button
               key={key}
@@ -1754,6 +1838,18 @@ function BaustellenplanungInnen() {
             error={error}
           />
         )}
+
+        {page === "anfragen" && (
+          <AnfragenListPage
+            anfragen={data.anfragen}
+            mitarbeiter={sichtbareMitarbeiter}
+            onOpenSidebar={() => setSidebarOpen(true)}
+            onNew={openNewAnfrage}
+            onEdit={openEditAnfrage}
+            onConvert={convertAnfrageToTermin}
+            error={error}
+          />
+        )}
       </div>
 
       {modalOpen && (
@@ -1781,6 +1877,18 @@ function BaustellenplanungInnen() {
           onSave={saveKunde}
           onDelete={kundeForm.id ? deleteKunde : null}
           onClose={() => setKundeModalOpen(false)}
+        />
+      )}
+
+      {anfrageModalOpen && (
+        <AnfrageModal
+          form={anfrageForm}
+          setForm={setAnfrageForm}
+          mitarbeiter={sichtbareMitarbeiter}
+          onSave={async (f) => { const ok = await saveAnfrage(f); if (ok) setAnfrageModalOpen(false); }}
+          onDelete={anfrageForm.id ? async () => { await deleteAnfrage(anfrageForm.id); setAnfrageModalOpen(false); } : null}
+          onConvert={anfrageForm.id ? () => { setAnfrageModalOpen(false); convertAnfrageToTermin(anfrageForm); } : null}
+          onClose={() => setAnfrageModalOpen(false)}
         />
       )}
 
@@ -3279,6 +3387,152 @@ function ProjekteListPage({ baustellen, projekte, alleMitarbeiter, alleKunden, i
         )}
       </div>
     </>
+  );
+}
+
+function AnfragenListPage({ anfragen, mitarbeiter, onOpenSidebar, onNew, onEdit, onConvert, error }) {
+  const [statusFilter, setStatusFilter] = useState("aktiv"); // aktiv | alle | erledigt
+
+  const sichtbar = anfragen.filter((a) => {
+    if (statusFilter === "alle") return true;
+    if (statusFilter === "erledigt") return a.status === "erledigt";
+    return a.status !== "erledigt";
+  });
+
+  return (
+    <div style={{ flex: 1, overflowY: "auto" }}>
+      <PageHeader onOpenSidebar={onOpenSidebar} title="Anfragen" actionLabel="Neue Anfrage" onAction={onNew} />
+      {error && <div style={{ margin: "12px 22px 0", background: "#FDECEA", color: "#B42318", fontSize: 12.5, padding: "8px 12px", borderRadius: 7 }}>{error}</div>}
+
+      <div style={{ padding: "16px 22px 0" }}>
+        <div style={{ display: "flex", background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 4, gap: 3, width: "fit-content" }}>
+          {[["aktiv", "Aktiv"], ["erledigt", "Erledigt"], ["alle", "Alle"]].map(([v, label]) => (
+            <button
+              key={v}
+              onClick={() => setStatusFilter(v)}
+              style={{
+                padding: "9px 16px", borderRadius: 7, border: "none", cursor: "pointer",
+                fontSize: 13, fontWeight: 700,
+                background: statusFilter === v ? COLORS.accent : "transparent",
+                color: statusFilter === v ? "#fff" : COLORS.textDark,
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ padding: 22 }}>
+        {sichtbar.length === 0 ? (
+          <div style={{ fontSize: 13, color: COLORS.textMuted, fontStyle: "italic" }}>Keine Anfragen.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {sichtbar.map((a) => {
+              const zugewiesen = mitarbeiter.find((m) => m.id === a.zugewiesenAn);
+              return (
+                <div
+                  key={a.id}
+                  onClick={() => onEdit(a)}
+                  style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 14, cursor: "pointer" }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 6 }}>
+                    <div style={{ fontSize: 14, fontWeight: 800 }}>{a.kunde || a.adresse || "—"}</div>
+                    <span style={{
+                      fontSize: 10.5, fontWeight: 700, padding: "3px 9px", borderRadius: 999, flexShrink: 0,
+                      color: "#fff", background: ANFRAGE_STATUS_FARBE[a.status] || "#666",
+                    }}>
+                      {ANFRAGE_STATUS_LABEL[a.status] || a.status}
+                    </span>
+                  </div>
+                  {a.adresse && a.kunde && (
+                    <div style={{ fontSize: 12, color: COLORS.textMuted, marginBottom: 3, display: "flex", alignItems: "center", gap: 4 }}>
+                      <MapPin size={11} /> {a.adresse}
+                    </div>
+                  )}
+                  {a.beschreibung && <div style={{ fontSize: 13, marginBottom: 4 }}>{a.beschreibung}</div>}
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 12, fontSize: 11.5, color: COLORS.textMuted }}>
+                    {a.kontaktName && <span>{a.kontaktName}</span>}
+                    {a.kontaktTelefon && <span>{a.kontaktTelefon}</span>}
+                    {zugewiesen && <span>→ {zugewiesen.name}</span>}
+                  </div>
+                  {a.notiz && <div style={{ fontSize: 11.5, color: COLORS.textMuted, fontStyle: "italic", marginTop: 4 }}>{a.notiz}</div>}
+                  {a.status !== "erledigt" && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onConvert(a); }}
+                      style={{ marginTop: 10, ...btnSecondary, fontSize: 11.5, display: "flex", alignItems: "center", gap: 5 }}
+                    >
+                      <CalendarIcon size={13} /> In Termin umwandeln
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AnfrageModal({ form, setForm, mitarbeiter, onSave, onDelete, onConvert, onClose }) {
+  return (
+    <div style={overlayStyle} onClick={onClose}>
+      <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <div style={{ fontSize: 16, fontWeight: 800 }}>{form.id ? "Anfrage bearbeiten" : "Neue Anfrage"}</div>
+          <button onClick={onClose} style={{ border: "none", background: "transparent", cursor: "pointer", color: COLORS.textMuted }}><X size={18} /></button>
+        </div>
+
+        <Field label="Kunde / Firma">
+          <input style={inputStyle} value={form.kunde} onChange={(e) => setForm({ ...form, kunde: e.target.value })} placeholder="z. B. MELTEC" />
+        </Field>
+        <Field label="Adresse">
+          <input style={inputStyle} value={form.adresse} onChange={(e) => setForm({ ...form, adresse: e.target.value })} placeholder="Straße, PLZ Ort" />
+        </Field>
+        <Field label="Beschreibung">
+          <textarea style={{ ...inputStyle, minHeight: 70, resize: "vertical", fontFamily: "inherit" }} value={form.beschreibung} onChange={(e) => setForm({ ...form, beschreibung: e.target.value })} placeholder="Was wird benötigt?" />
+        </Field>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Field label="Kontaktperson" style={{ flex: 1 }}>
+            <input style={inputStyle} value={form.kontaktName} onChange={(e) => setForm({ ...form, kontaktName: e.target.value })} />
+          </Field>
+          <Field label="Telefon" style={{ flex: 1 }}>
+            <input style={inputStyle} value={form.kontaktTelefon} onChange={(e) => setForm({ ...form, kontaktTelefon: e.target.value })} />
+          </Field>
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Field label="Status" style={{ flex: 1 }}>
+            <select style={inputStyle} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+              {Object.entries(ANFRAGE_STATUS_LABEL).map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+            </select>
+          </Field>
+          <Field label="Zugewiesen an" style={{ flex: 1 }}>
+            <select style={inputStyle} value={form.zugewiesenAn || ""} onChange={(e) => setForm({ ...form, zugewiesenAn: e.target.value || null })}>
+              <option value="">—</option>
+              {mitarbeiter.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </select>
+          </Field>
+        </div>
+        <Field label="Notiz">
+          <input style={inputStyle} value={form.notiz} onChange={(e) => setForm({ ...form, notiz: e.target.value })} placeholder="z. B. ab Januar, nochmal hin…" />
+        </Field>
+
+        {onConvert && (
+          <button onClick={onConvert} style={{ ...btnSecondary, width: "100%", marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "center", gap: 7 }}>
+            <CalendarIcon size={14} /> In Termin umwandeln
+          </button>
+        )}
+        <div style={{ display: "flex", gap: 8 }}>
+          {onDelete && (
+            <button onClick={onDelete} style={{ ...btnSecondary, color: "#B42318" }}>
+              <Trash2 size={15} />
+            </button>
+          )}
+          <button onClick={() => onSave(form)} style={{ ...btnPrimary, flex: 1 }}>Speichern</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
