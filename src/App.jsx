@@ -124,6 +124,10 @@ const STANDARD_TAGESKAPAZITAET = 8; // 08:00–17:00, moins 1h de pause déjeune
 // commence — les semaines antérieures (avant l'existence de cette fonktion)
 // ne sont jamais signalées.
 const ZEITERFASSUNG_TRACKING_START = "2026-09-03";
+// À partir de cette heure, si "Arbeit beginnen" n'a pas encore été pressé,
+// on considère que la journée est probablement déjà terminée et on propose
+// de saisir directement début + fin plutôt que de démarrer maintenant.
+const TAG_SPAETER_SCHWELLE = "18:00";
 
 // Nombre d'heures que représente un Termin pour UNE journée : basé sur
 // l'heure de début/fin si précisée. Recadré sur 08:00–17:00, sauf si le
@@ -713,9 +717,9 @@ function BaustellenplanungInnen() {
   // Un seul enregistrement Beginn/Ende par employé et par jour (le premier
   // "Arbeit beginnen" du jour, le dernier "Arbeit beenden" du jour) — pas
   // par rendez-vous, pour éviter de multiplier les clics.
-  const stempelBeginn = async (mitarbeiterId) => {
+  const stempelBeginn = async (mitarbeiterId, gewaehlteZeit) => {
     const heute = fmt(new Date());
-    const jetzt = new Date().toTimeString().slice(0, 5);
+    const jetzt = gewaehlteZeit || new Date().toTimeString().slice(0, 5);
     const bestehend = data.arbeitszeiten.find((a) => a.mitarbeiterId === mitarbeiterId && a.datum === heute);
     const { data: row, error: err } = await supabase
       .from("arbeitszeiten")
@@ -1535,11 +1539,12 @@ function BaustellenplanungInnen() {
             arbeitszeiten={data.arbeitszeiten}
             pausen={data.pausen}
             vorwocheOffeneTage={fehlendeArbeitszeitTage}
-            onBeginn={() => stempelBeginn(currentUserId)}
+            onBeginn={(zeit) => stempelBeginn(currentUserId, zeit)}
             onEnde={() => stempelEnde(currentUserId)}
             onPauseBeginnen={(motiv) => pauseBeginnen(currentUserId, motiv)}
             onPauseBeenden={(pauseId) => pauseBeenden(pauseId)}
             onNachtragenOeffnen={() => setArbeitszeitModalGeschlossen(false)}
+            onNachtragHeute={(beginn, ende) => nachtragenArbeitszeit(currentUserId, fmt(new Date()), beginn, ende)}
           />
           {nichtGespeicherteWochen.length > 0 && !stundennachweisErinnerungGeschlossen && (
             <div style={{ background: "#3A2A18", border: "1px solid #6B4A22", borderRadius: 8, padding: "9px 10px" }}>
@@ -1612,11 +1617,12 @@ function BaustellenplanungInnen() {
             pausen={data.pausen}
             vorwocheOffeneTage={fehlendeArbeitszeitTage}
             onOpenSidebar={() => setSidebarOpen(true)}
-            onBeginn={() => stempelBeginn(currentUserId)}
+            onBeginn={(zeit) => stempelBeginn(currentUserId, zeit)}
             onEnde={() => stempelEnde(currentUserId)}
             onPauseBeginnen={(motiv) => pauseBeginnen(currentUserId, motiv)}
             onPauseBeenden={(pauseId) => pauseBeenden(pauseId)}
             onNachtragenOeffnen={() => setArbeitszeitModalGeschlossen(false)}
+            onNachtragHeute={(beginn, ende) => nachtragenArbeitszeit(currentUserId, fmt(new Date()), beginn, ende)}
             onBaustelleClick={openEditBaustelle}
           />
         )}
@@ -3609,7 +3615,84 @@ function StundenUebersicht({ baustellen, mitarbeiter, abwesenheiten }) {
   );
 }
 
-function PointeuseSeite({ me, baustellen, arbeitszeiten, pausen, vorwocheOffeneTage, onOpenSidebar, onBeginn, onEnde, onPauseBeginnen, onPauseBeenden, onNachtragenOeffnen, onBaustelleClick }) {
+// Bouton "Arbeit beginnen" intelligent : si l'heure actuelle est encore
+// raisonnable, demande de confirmer/ajuster l'heure de début réelle (au
+// cas où le login a lieu après le début effectif du travail). Si la
+// journée est déjà bien avancée (>= TAG_SPAETER_SCHWELLE), propose
+// directement de saisir début ET fin plutôt que de "commencer maintenant".
+function SmartBeginnControl({ onBeginn, onNachtragHeute, gross }) {
+  const jetzt = new Date().toTimeString().slice(0, 5);
+  const istSpaet = jetzt >= TAG_SPAETER_SCHWELLE;
+  const [modus, setModus] = useState(null); // null | "confirm" | "nachtrag"
+  const [zeit, setZeit] = useState(jetzt);
+  const [nachtragBeginn, setNachtragBeginn] = useState(ARBEITSTAG_START);
+  const [nachtragEnde, setNachtragEnde] = useState(jetzt);
+  const [laedt, setLaedt] = useState(false);
+
+  const pad = gross ? "20px 0" : "9px 0";
+  const fontSize = gross ? 18 : 13;
+  const radius = gross ? 14 : 8;
+  const iconSize = gross ? 22 : 14;
+
+  const btnStyle = (bg) => ({
+    display: "flex", alignItems: "center", justifyContent: "center", gap: gross ? 10 : 7, width: "100%",
+    background: bg, color: "#fff", border: "none", borderRadius: radius, padding: pad,
+    fontSize, fontWeight: gross ? 800 : 700, cursor: "pointer", opacity: laedt ? 0.6 : 1,
+  });
+  const boxStyle = { background: gross ? "#F6F5F2" : "#2A3038", borderRadius: radius, padding: gross ? 18 : 10 };
+  const labelStyle = { fontSize: gross ? 14 : 11, color: gross ? COLORS.textMuted : COLORS.textLightMuted, marginBottom: gross ? 12 : 7 };
+  const inputStyle2 = { ...inputStyle, flex: 1 };
+
+  if (modus === "confirm") {
+    return (
+      <div style={boxStyle}>
+        <div style={labelStyle}>Wann hast du tatsächlich begonnen?</div>
+        <input type="time" value={zeit} onChange={(e) => setZeit(e.target.value)} style={{ ...inputStyle2, width: "100%", marginBottom: 8 }} />
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={() => setModus(null)} style={{ ...btnStyle("#4A5568"), flex: 1 }}>Abbrechen</button>
+          <button
+            onClick={async () => { setLaedt(true); await onBeginn(zeit); setLaedt(false); }}
+            disabled={laedt} style={{ ...btnStyle(COLORS.brandGreen), flex: 1.4 }}
+          >
+            Bestätigen
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (modus === "nachtrag") {
+    return (
+      <div style={boxStyle}>
+        <div style={labelStyle}>Es ist bereits {jetzt} — trag die heutige Arbeitszeit direkt ein:</div>
+        <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+          <input type="time" value={nachtragBeginn} onChange={(e) => setNachtragBeginn(e.target.value)} style={inputStyle2} />
+          <input type="time" value={nachtragEnde} onChange={(e) => setNachtragEnde(e.target.value)} style={inputStyle2} />
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={() => setModus(null)} style={{ ...btnStyle("#4A5568"), flex: 1 }}>Abbrechen</button>
+          <button
+            onClick={async () => { setLaedt(true); await onNachtragHeute(nachtragBeginn, nachtragEnde); setLaedt(false); }}
+            disabled={laedt} style={{ ...btnStyle(COLORS.accent), flex: 1.4 }}
+          >
+            Speichern
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={() => (istSpaet ? setModus("nachtrag") : (setZeit(jetzt), setModus("confirm")))}
+      style={btnStyle(COLORS.brandGreen)}
+    >
+      <Clock size={iconSize} /> Arbeit beginnen
+    </button>
+  );
+}
+
+function PointeuseSeite({ me, baustellen, arbeitszeiten, pausen, vorwocheOffeneTage, onOpenSidebar, onBeginn, onEnde, onPauseBeginnen, onPauseBeenden, onNachtragenOeffnen, onNachtragHeute, onBaustelleClick }) {
   const [laedt, setLaedt] = useState(false);
   const heute = fmt(new Date());
   const heutigeZeit = (arbeitszeiten || []).find((a) => a.mitarbeiterId === me.id && a.datum === heute);
@@ -3650,11 +3733,7 @@ function PointeuseSeite({ me, baustellen, arbeitszeiten, pausen, vorwocheOffeneT
       </div>
     );
   } else if (!heutigeZeit?.beginn) {
-    inhalt = (
-      <button onClick={() => klick(onBeginn)} disabled={laedt} style={grossBtn(COLORS.brandGreen)}>
-        <Clock size={22} /> Arbeit beginnen
-      </button>
-    );
+    inhalt = <SmartBeginnControl onBeginn={onBeginn} onNachtragHeute={onNachtragHeute} gross />;
   } else if (!heutigeZeit.ende) {
     if (offenePause) {
       inhalt = (
@@ -3739,7 +3818,7 @@ function PointeuseSeite({ me, baustellen, arbeitszeiten, pausen, vorwocheOffeneT
   );
 }
 
-function StempeluhrWidget({ mitarbeiterId, arbeitszeiten, pausen, vorwocheOffeneTage, onBeginn, onEnde, onPauseBeginnen, onPauseBeenden, onNachtragenOeffnen }) {
+function StempeluhrWidget({ mitarbeiterId, arbeitszeiten, pausen, vorwocheOffeneTage, onBeginn, onEnde, onPauseBeginnen, onPauseBeenden, onNachtragenOeffnen, onNachtragHeute }) {
   const [laedt, setLaedt] = useState(false);
   const heute = fmt(new Date());
   const heutigeZeit = arbeitszeiten.find((a) => a.mitarbeiterId === mitarbeiterId && a.datum === heute);
@@ -3783,11 +3862,7 @@ function StempeluhrWidget({ mitarbeiterId, arbeitszeiten, pausen, vorwocheOffene
         </div>
       );
     }
-    return (
-      <button onClick={() => klick(onBeginn)} disabled={laedt} style={btnStyle(COLORS.brandGreen)}>
-        <Clock size={14} /> Arbeit beginnen
-      </button>
-    );
+    return <SmartBeginnControl onBeginn={onBeginn} onNachtragHeute={onNachtragHeute} />;
   }
 
   if (!heutigeZeit.ende) {
