@@ -422,7 +422,20 @@ const ANFRAGE_STATUS_FARBE = {
 function anfrageTageOffen(a) {
   const start = new Date(a.erstelltAm);
   const ende = a.erledigtAm ? new Date(a.erledigtAm) : new Date();
-  return Math.max(0, Math.round((ende - start) / 86400000));
+  const startTag = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const endeTag = new Date(ende.getFullYear(), ende.getMonth(), ende.getDate());
+  let tage = 0;
+  const cur = new Date(startTag);
+  while (cur < endeTag) {
+    cur.setDate(cur.getDate() + 1);
+    if (!istWochenendtag(fmt(cur))) tage++;
+  }
+  return Math.max(0, tage);
+}
+function anfrageDringlichkeitsFarbe(tage) {
+  if (tage <= 2) return "#2F855A"; // vert : jusqu'à 2 jours
+  if (tage < 7) return "#B45309"; // orange : à partir de 2 jours, jusqu'à une semaine
+  return "#B42318"; // rouge : à partir d'une semaine
 }
 const ABWESENHEIT_FARBE = { urlaub: "#0B7285", krankheit: "#B42318", fortbildung: "#6B46C1" };
 function findeAbwesenheitenFuerZeitraum(mitarbeiterId, beginn, ende, abwesenheiten) {
@@ -3406,11 +3419,13 @@ function ProjekteListPage({ baustellen, projekte, alleMitarbeiter, alleKunden, i
 function AnfragenListPage({ anfragen, mitarbeiter, onOpenSidebar, onNew, onEdit, onConvert, error }) {
   const [statusFilter, setStatusFilter] = useState("aktiv"); // aktiv | alle | erledigt
 
-  const sichtbar = anfragen.filter((a) => {
-    if (statusFilter === "alle") return true;
-    if (statusFilter === "erledigt") return a.status === "erledigt";
-    return a.status !== "erledigt";
-  });
+  const sichtbar = anfragen
+    .filter((a) => {
+      if (statusFilter === "alle") return true;
+      if (statusFilter === "erledigt") return a.status === "erledigt";
+      return a.status !== "erledigt";
+    })
+    .sort((a, b) => (statusFilter === "erledigt" ? new Date(b.erledigtAm) - new Date(a.erledigtAm) : new Date(a.erstelltAm) - new Date(b.erstelltAm)));
 
   return (
     <div style={{ flex: 1, overflowY: "auto" }}>
@@ -3458,12 +3473,19 @@ function AnfragenListPage({ anfragen, mitarbeiter, onOpenSidebar, onNew, onEdit,
                       {ANFRAGE_STATUS_LABEL[a.status] || a.status}
                     </span>
                   </div>
-                  <div style={{ fontSize: 10.5, color: COLORS.textMuted, marginBottom: 6 }}>
-                    Eingegangen am {formatDatumDE(fmt(new Date(a.erstelltAm)))}, {new Date(a.erstelltAm).toTimeString().slice(0, 5)} Uhr
-                    {" — "}
-                    {a.status === "erledigt"
-                      ? `erledigt nach ${anfrageTageOffen(a)} Tag${anfrageTageOffen(a) === 1 ? "" : "en"}`
-                      : `seit ${anfrageTageOffen(a)} Tag${anfrageTageOffen(a) === 1 ? "" : "en"} offen`}
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+                    {a.status !== "erledigt" && (
+                      <span style={{
+                        fontSize: 12, fontWeight: 800, padding: "4px 10px", borderRadius: 999,
+                        color: "#fff", background: anfrageDringlichkeitsFarbe(anfrageTageOffen(a)),
+                      }}>
+                        {anfrageTageOffen(a) === 0 ? "⚡ Heute eingegangen" : `⏱ Seit ${anfrageTageOffen(a)} Tag${anfrageTageOffen(a) === 1 ? "" : "en"} offen`}
+                      </span>
+                    )}
+                    <span style={{ fontSize: 10.5, color: COLORS.textMuted }}>
+                      {formatDatumDE(fmt(new Date(a.erstelltAm)))}, {new Date(a.erstelltAm).toTimeString().slice(0, 5)} Uhr
+                      {a.status === "erledigt" && ` — erledigt nach ${anfrageTageOffen(a)} Tag${anfrageTageOffen(a) === 1 ? "" : "en"}`}
+                    </span>
                   </div>
                   {a.adresse && a.kunde && (
                     <div style={{ fontSize: 12, color: COLORS.textMuted, marginBottom: 3, display: "flex", alignItems: "center", gap: 4 }}>
