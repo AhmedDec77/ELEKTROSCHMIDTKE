@@ -3459,7 +3459,7 @@ function AnfragenListPage({ anfragen, mitarbeiter, onOpenSidebar, onNew, onEdit,
                     </span>
                   </div>
                   <div style={{ fontSize: 10.5, color: COLORS.textMuted, marginBottom: 6 }}>
-                    Eingegangen am {formatDatumDE(fmt(new Date(a.erstelltAm)))}
+                    Eingegangen am {formatDatumDE(fmt(new Date(a.erstelltAm)))}, {new Date(a.erstelltAm).toTimeString().slice(0, 5)} Uhr
                     {" — "}
                     {a.status === "erledigt"
                       ? `erledigt nach ${anfrageTageOffen(a)} Tag${anfrageTageOffen(a) === 1 ? "" : "en"}`
