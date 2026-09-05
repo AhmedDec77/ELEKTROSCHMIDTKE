@@ -394,6 +394,7 @@ function mapAnfrageRow(row) {
   return {
     id: row.id,
     erstelltAm: row.erstellt_am,
+    erledigtAm: row.erledigt_am || null,
     adresse: row.adresse || "",
     kunde: row.kunde || "",
     beschreibung: row.beschreibung || "",
@@ -418,6 +419,11 @@ const ANFRAGE_STATUS_FARBE = {
   geplant: "#2B6CB0",
   erledigt: "#2F855A",
 };
+function anfrageTageOffen(a) {
+  const start = new Date(a.erstelltAm);
+  const ende = a.erledigtAm ? new Date(a.erledigtAm) : new Date();
+  return Math.max(0, Math.round((ende - start) / 86400000));
+}
 const ABWESENHEIT_FARBE = { urlaub: "#0B7285", krankheit: "#B42318", fortbildung: "#6B46C1" };
 function findeAbwesenheitenFuerZeitraum(mitarbeiterId, beginn, ende, abwesenheiten) {
   return abwesenheiten.filter((a) => a.mitarbeiterId === mitarbeiterId && rangesOverlap(a.beginn, a.ende, beginn, ende));
@@ -830,11 +836,18 @@ function BaustellenplanungInnen() {
       notiz: form.notiz.trim(),
     };
     if (form.id) {
+      const vorher = data.anfragen.find((a) => a.id === form.id);
+      if (zeilen.status === "erledigt" && vorher?.status !== "erledigt") {
+        zeilen.erledigt_am = new Date().toISOString();
+      } else if (zeilen.status !== "erledigt" && vorher?.status === "erledigt") {
+        zeilen.erledigt_am = null;
+      }
       const { data: row, error: err } = await supabase.from("anfragen").update(zeilen).eq("id", form.id).select().single();
       if (err) { setError(`Fehler beim Speichern: ${err.message}`); return false; }
       const neu = mapAnfrageRow(row);
       setData((d) => ({ ...d, anfragen: d.anfragen.map((a) => (a.id === neu.id ? neu : a)) }));
     } else {
+      if (zeilen.status === "erledigt") zeilen.erledigt_am = new Date().toISOString();
       const { data: row, error: err } = await supabase.from("anfragen").insert(zeilen).select().single();
       if (err) { setError(`Fehler beim Speichern: ${err.message}`); return false; }
       const neu = mapAnfrageRow(row);
@@ -3444,6 +3457,13 @@ function AnfragenListPage({ anfragen, mitarbeiter, onOpenSidebar, onNew, onEdit,
                     }}>
                       {ANFRAGE_STATUS_LABEL[a.status] || a.status}
                     </span>
+                  </div>
+                  <div style={{ fontSize: 10.5, color: COLORS.textMuted, marginBottom: 6 }}>
+                    Eingegangen am {formatDatumDE(fmt(new Date(a.erstelltAm)))}
+                    {" — "}
+                    {a.status === "erledigt"
+                      ? `erledigt nach ${anfrageTageOffen(a)} Tag${anfrageTageOffen(a) === 1 ? "" : "en"}`
+                      : `seit ${anfrageTageOffen(a)} Tag${anfrageTageOffen(a) === 1 ? "" : "en"} offen`}
                   </div>
                   {a.adresse && a.kunde && (
                     <div style={{ fontSize: 12, color: COLORS.textMuted, marginBottom: 3, display: "flex", alignItems: "center", gap: 4 }}>
