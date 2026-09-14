@@ -1033,6 +1033,11 @@ function BaustellenplanungInnen() {
   const findConflicts = (candidateForm) => {
     const conflicts = [];
     for (const z of candidateForm.zuweisungen) {
+      // Un profil privé (ex. "Amin 2") ne génère et ne subit jamais de
+      // conflit — son calendrier n'est qu'un reflet, il ne doit jamais
+      // bloquer la réservation d'un rendez-vous sur le profil public.
+      const zMitarbeiter = data.mitarbeiter.find((m) => m.id === z.mitarbeiterId);
+      if (zMitarbeiter?.privatFuer) continue;
       for (const other of data.baustellen) {
         if (other.id === candidateForm.id) continue;
         for (const oz of other.zuweisungen || []) {
@@ -4386,7 +4391,7 @@ function AbwesenheitenPage({ mitarbeiter, abwesenheiten, isAdmin, currentUserId,
 
 function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundennachweis, arbeitszeiten, pausen, isAdmin, currentUserId, onSave }) {
   const heute = new Date();
-  const [mitarbeiterId, setMitarbeiterId] = useState(isAdmin ? (mitarbeiter[0]?.id || "") : currentUserId || "");
+  const [mitarbeiterId, setMitarbeiterId] = useState(isAdmin ? (mitarbeiter.find((m) => !m.privatFuer)?.id || "") : currentUserId || "");
   const [jahr, setJahr] = useState(heute.getFullYear());
   const [monat, setMonat] = useState(heute.getMonth()); // 0-11
   const [eintraege, setEintraege] = useState([]); // [{ id, datum, kunde, leistung, stunden }] — SEULE source éditable
@@ -4397,7 +4402,10 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
   const [speichertGerade, setSpeichertGerade] = useState(false);
   const [gespeichertHinweis, setGespeichertHinweis] = useState(false);
 
-  const sichtbareMitarbeiter = isAdmin ? mitarbeiter : mitarbeiter.filter((m) => m.id === currentUserId);
+  // Les profils privés (ex. "Amin 2") ne reportent jamais leurs heures —
+  // seul le profil public correspondant le fait.
+  const mitarbeiterOhnePrivat = mitarbeiter.filter((m) => !m.privatFuer);
+  const sichtbareMitarbeiter = isAdmin ? mitarbeiterOhnePrivat : mitarbeiterOhnePrivat.filter((m) => m.id === currentUserId);
 
   const berechneAusKalender = () => {
     if (!mitarbeiterId) return;
