@@ -99,6 +99,42 @@ function zeitenUeberlappen(aStart, aEnde, bStart, bEnde) {
   if (!aStart || !aEnde || !bStart || !bEnde) return true;
   return aStart < bEnde && bStart < aEnde;
 }
+// Calcule le dimanche de Pâques (algorithme de Gauss).
+function osterSonntag(jahr) {
+  const a = jahr % 19, b = Math.floor(jahr / 100), c = jahr % 100;
+  const d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const monat = Math.floor((h + l - 7 * m + 114) / 31);
+  const tag = ((h + l - 7 * m + 114) % 31) + 1;
+  return new Date(jahr, monat - 1, tag);
+}
+// Jours fériés légaux en Bavière (Allemagne), calculés automatiquement
+// (fixes + mobiles dérivés de Pâques). Retourne un Set de dates "YYYY-MM-DD".
+function bayerischeFeiertage(jahr) {
+  const ostern = osterSonntag(jahr);
+  const plusTage = (n) => fmt(new Date(ostern.getFullYear(), ostern.getMonth(), ostern.getDate() + n));
+  return new Set([
+    fmt(new Date(jahr, 0, 1)),    // Neujahr
+    fmt(new Date(jahr, 0, 6)),    // Heilige Drei Könige
+    plusTage(-2),                 // Karfreitag
+    plusTage(1),                  // Ostermontag
+    fmt(new Date(jahr, 4, 1)),    // Tag der Arbeit
+    plusTage(39),                 // Christi Himmelfahrt
+    plusTage(50),                 // Pfingstmontag
+    plusTage(60),                 // Fronleichnam
+    fmt(new Date(jahr, 7, 15)),   // Mariä Himmelfahrt
+    fmt(new Date(jahr, 9, 3)),    // Tag der Deutschen Einheit
+    fmt(new Date(jahr, 10, 1)),   // Allerheiligen
+    fmt(new Date(jahr, 11, 25)),  // 1. Weihnachtsfeiertag
+    fmt(new Date(jahr, 11, 26)),  // 2. Weihnachtsfeiertag
+  ]);
+}
+function istBayerischerFeiertag(dateStr) {
+  const jahr = Number(dateStr.slice(0, 4));
+  return bayerischeFeiertage(jahr).has(dateStr);
+}
 function istWochenendtag(dateStr) {
   const [y, m, d] = dateStr.split("-").map(Number);
   const tag = new Date(y, m - 1, d).getDay();
@@ -353,13 +389,13 @@ function mapAbwesenheitRow(row) {
   return {
     id: row.id,
     mitarbeiterId: row.mitarbeiter_id,
-    typ: row.typ, // "urlaub" | "krankheit" | "fortbildung"
+    typ: row.typ, // "urlaub" | "krankheit" | "fortbildung" | "feiertag"
     beginn: row.beginn,
     ende: row.ende,
     notiz: row.notiz || "",
   };
 }
-const ABWESENHEIT_LABEL = { urlaub: "Urlaub", krankheit: "Krankheit", fortbildung: "Fortbildung" };
+const ABWESENHEIT_LABEL = { urlaub: "Urlaub", krankheit: "Krankheit", fortbildung: "Fortbildung", feiertag: "Feiertag" };
 function mapStundennachweisEintragRow(row) {
   return {
     id: row.id,
@@ -437,7 +473,7 @@ function anfrageDringlichkeitsFarbe(tage) {
   if (tage < 7) return "#B45309"; // orange : à partir de 2 jours, jusqu'à une semaine
   return "#B42318"; // rouge : à partir d'une semaine
 }
-const ABWESENHEIT_FARBE = { urlaub: "#0B7285", krankheit: "#B42318", fortbildung: "#6B46C1" };
+const ABWESENHEIT_FARBE = { urlaub: "#0B7285", krankheit: "#B42318", fortbildung: "#6B46C1", feiertag: "#B45309" };
 function findeAbwesenheitenFuerZeitraum(mitarbeiterId, beginn, ende, abwesenheiten) {
   return abwesenheiten.filter((a) => a.mitarbeiterId === mitarbeiterId && rangesOverlap(a.beginn, a.ende, beginn, ende));
 }
@@ -4417,16 +4453,20 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
       const roh = eintraegeFuerTag(mitarbeiterId, ds, baustellen);
       if (roh.length === 0) {
         // Jour sans chantier : si absence complète (Urlaub/Krankheit/
-        // Fortbildung), on crédite 8h — pour le calcul du salaire dans le
-        // détail hebdomadaire. Marqué "istAbwesenheit" pour ne JAMAIS être
-        // compté dans le document légal mensuel (Dauer der Arbeitsleistung
-        // ne doit refléter que le temps de travail réellement effectué).
+        // Fortbildung) OU jour férié bavarois (calculé automatiquement,
+        // jamais saisi manuellement), on crédite 8h — pour le calcul du
+        // salaire, dans le Wochendetail ET la Monatsübersicht.
         const abwesenheitDesTages = (abwesenheiten || []).find((a) => a.mitarbeiterId === mitarbeiterId && a.beginn <= ds && ds <= a.ende);
         if (abwesenheitDesTages) {
           neu.push({
             id: `auto-${n++}`, datum: ds,
             kunde: ABWESENHEIT_LABEL[abwesenheitDesTages.typ] || abwesenheitDesTages.typ,
             leistung: "", stunden: STANDARD_TAGESKAPAZITAET, istAbwesenheit: true,
+          });
+        } else if (!istWochenendtag(ds) && istBayerischerFeiertag(ds)) {
+          neu.push({
+            id: `auto-${n++}`, datum: ds,
+            kunde: "Feiertag", leistung: "", stunden: STANDARD_TAGESKAPAZITAET, istAbwesenheit: true,
           });
         }
         continue;
@@ -4563,15 +4603,21 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
   })();
 
   // --- Vue mensuelle : entièrement DÉRIVÉE du détail hebdomadaire, jamais éditée séparément ---
+  // Calculée exactement comme le Wochendetail : Urlaub/Krankheit/Fortbildung/
+  // Feiertag comptent pour 8h (demande explicite — ce document ne reflète
+  // donc plus uniquement le temps de travail réel, voir avertissement dans le PDF).
   const tage = (() => {
     const monatBeginn = fmt(new Date(jahr, monat, 1));
     const monatEnde = fmt(new Date(jahr, monat + 1, 0));
     return alleTageZwischen(monatBeginn, monatEnde).map((ds) => {
-      const eintraegeTag = eintraege.filter((e) => e.datum === ds && Number(e.stunden) > 0 && !e.istAbwesenheit);
+      const eintraegeTag = eintraege.filter((e) => e.datum === ds && Number(e.stunden) > 0);
       const dauerStd = Math.round(eintraegeTag.reduce((s, e) => s + (Number(e.stunden) || 0), 0) * 4) / 4;
-      const abwesenheit = (abwesenheiten || []).find((a) => a.mitarbeiterId === mitarbeiterId && a.beginn <= ds && ds <= a.ende);
+      const nurAbwesenheit = eintraegeTag.length > 0 && eintraegeTag.every((e) => e.istAbwesenheit);
       if (dauerStd <= 0) {
-        return { datum: ds, arbeitstag: false, beginn: "", ende: "", pauseMin: 0, dauerStd: 0, abwesenheit };
+        return { datum: ds, art: "leer", beginn: "", ende: "", pauseMin: 0, dauerStd: 0, label: "" };
+      }
+      if (nurAbwesenheit) {
+        return { datum: ds, art: "abwesenheit", beginn: "", ende: "", pauseMin: 0, dauerStd, label: eintraegeTag[0].kunde };
       }
       const pauseMin = 60;
       const beginnDez = 8; // 08:00 fixe
@@ -4579,7 +4625,7 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
       const eh = Math.floor(endeDez);
       const em = Math.round((endeDez - eh) * 60);
       const ende = `${String(eh).padStart(2, "0")}:${String(em).padStart(2, "0")}`;
-      return { datum: ds, arbeitstag: true, beginn: ARBEITSTAG_START, ende, pauseMin, dauerStd, abwesenheit: null };
+      return { datum: ds, art: "arbeit", beginn: ARBEITSTAG_START, ende, pauseMin, dauerStd, label: "" };
     });
   })();
   const summe = Math.round(tage.reduce((s, t) => s + (t.dauerStd || 0), 0) * 4) / 4;
@@ -4587,9 +4633,30 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
   const alleAufzeichnungsdatenSetzen = () => {
     const heuteStr = fmt(new Date());
     const neu = {};
-    tage.forEach((t) => { if (t.arbeitstag) neu[t.datum] = heuteStr; });
+    tage.forEach((t) => { if (t.art !== "leer") neu[t.datum] = heuteStr; });
     setAufzeichnungsDaten(neu);
     setGeladenAus((g) => (g === "gespeichert" ? "bearbeitet" : g));
+  };
+
+  // Génère le corps du tableau + calcule où se trouve la colonne "Dauer",
+  // pour que le total (Summe) s'aligne verticalement dessus — utilisé par
+  // le rapport mensuel légal ET le rapport hebdomadaire.
+  const zeichneStundennachweisTabelle = (doc, autoTable, startY, marginX, body) => {
+    let dauerSpalteX = marginX;
+    autoTable(doc, {
+      startY,
+      margin: { left: marginX, right: marginX },
+      head: [["Datum der\nArbeitsleistung", "Uhrzeit Beginn\nder Arbeitsleistung", "Uhrzeit Ende\nder Arbeitsleistung", "Pause\nin Min.", "Dauer der\nArbeitsleistung (Std.)", "Datum der\nAufzeichnung"]],
+      body,
+      styles: { fontSize: 8, cellPadding: 1.6, halign: "center" },
+      headStyles: { fillColor: [230, 228, 222], textColor: 20, fontStyle: "bold", fontSize: 7.5 },
+      columnStyles: { 0: { halign: "left" } },
+      theme: "grid",
+      didDrawCell: (data) => {
+        if (data.section === "head" && data.column.index === 4) dauerSpalteX = data.cell.x;
+      },
+    });
+    return dauerSpalteX;
   };
 
   const excelExportieren = async () => {
@@ -4633,54 +4700,59 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
     XLSX.writeFile(wb, dateiname);
   };
 
-  const pdfErstellen = async () => {
+  // Rapport HEBDOMADAIRE (une seule semaine), heures d'absence payées
+  // (Urlaub/Krankheit/Fortbildung/Feiertag) comptées à 8h/jour — à la
+  // différence du rapport mensuel légal, qui les exclut volontairement.
+  const wochenPdfErstellen = async (kw, wochenBeginn, wochenEnde) => {
     const { jsPDF } = await import("jspdf");
     const { default: autoTable } = await import("jspdf-autotable");
     const doc = new jsPDF({ unit: "mm", format: "a4" });
     const marginX = 15;
     let y = 18;
 
+    const tageDerWoche = alleTageZwischen(wochenBeginn, wochenEnde).map((ds) => {
+      const eintraegeTag = eintraege.filter((e) => e.datum === ds && Number(e.stunden) > 0);
+      const dauerStd = Math.round(eintraegeTag.reduce((s, e) => s + (Number(e.stunden) || 0), 0) * 4) / 4;
+      const nurAbwesenheit = eintraegeTag.length > 0 && eintraegeTag.every((e) => e.istAbwesenheit);
+      if (dauerStd <= 0) return { datum: ds, art: "leer" };
+      if (nurAbwesenheit) return { datum: ds, art: "abwesenheit", label: eintraegeTag[0].kunde, dauerStd };
+      const pauseMin = 60;
+      const endeDez = 8 + pauseMin / 60 + dauerStd;
+      const eh = Math.floor(endeDez), em = Math.round((endeDez - eh) * 60);
+      return { datum: ds, art: "arbeit", beginn: ARBEITSTAG_START, ende: `${String(eh).padStart(2, "0")}:${String(em).padStart(2, "0")}`, pauseMin, dauerStd };
+    });
+    const summeWoche = Math.round(tageDerWoche.reduce((s, t) => s + (t.dauerStd || 0), 0) * 4) / 4;
+
     doc.setFont("helvetica", "bold");
     doc.setFontSize(12);
-    doc.text("Aufzeichnung der Arbeitszeiten gemäß § 17 Mindestlohngesetz", marginX, y);
+    doc.text("Wochenbericht Arbeitszeiten (inkl. bezahlter Abwesenheiten)", marginX, y);
     y += 8;
 
     doc.setFontSize(9);
-    doc.text("Wichtiger Hinweis:", marginX, y);
+    doc.text("Hinweis:", marginX, y);
     y += 4.5;
     doc.setFont("helvetica", "normal");
-    const hinweis = "Die Aufzeichnungen müssen spätestens mit Ablauf des 7. Kalendertages erstellt werden, der auf den Tag der Arbeitsleistung folgt. Sie sind 2 Jahre lang aufzubewahren, beginnend ab dem Tag, den für die Aufzeichnung maßgeblichen Zeitpunkt.";
+    const hinweis = "Urlaub, Krankheit, Fortbildung und Feiertage werden mit 8 Std./Tag berücksichtigt. Dieser Wochenbericht dient der Lohnabrechnung und ersetzt nicht den amtlichen Nachweis nach § 17 Mindestlohngesetz (dort zählt nur tatsächlich geleistete Arbeitszeit).";
     const hinweisZeilen = doc.splitTextToSize(hinweis, 180);
     doc.text(hinweisZeilen, marginX, y);
     y += hinweisZeilen.length * 4 + 5;
 
     doc.text(`Bezeichnung des Arbeitgebers: ${arbeitgeber}`, marginX, y); y += 5;
     doc.text(`Name, Vorname des Arbeitnehmers: ${arbeitnehmer}`, marginX, y); y += 5;
-    const monatBeginn = fmt(new Date(jahr, monat, 1));
-    const monatEnde = fmt(new Date(jahr, monat + 1, 0));
-    doc.text(`Aufzeichnung für die Zeit vom: ${formatDatumDE(monatBeginn)} bis zum ${formatDatumDE(monatEnde)}`, marginX, y);
+    doc.text(`Woche KW-${String(kw).padStart(2, "0")}, vom: ${formatDatumDE(wochenBeginn)} bis zum ${formatDatumDE(wochenEnde)}`, marginX, y);
     y += 7;
 
-    autoTable(doc, {
-      startY: y,
-      margin: { left: marginX, right: marginX },
-      head: [["Datum der\nArbeitsleistung", "Uhrzeit Beginn\nder Arbeitsleistung", "Uhrzeit Ende\nder Arbeitsleistung", "Pause\nin Min.", "Dauer der\nArbeitsleistung (Std.)", "Datum der\nAufzeichnung"]],
-      body: tage.map((t) => t.arbeitstag
-        ? [formatDatumDE(t.datum), t.beginn, t.ende, String(t.pauseMin), String(t.dauerStd), formatDatumDE(aufzeichnungsDaten[t.datum] || "")]
-        : t.abwesenheit
-          ? [formatDatumDE(t.datum), `${ABWESENHEIT_LABEL[t.abwesenheit.typ] || t.abwesenheit.typ} (bezahlt, nicht gearbeitet)`, "", "", "", ""]
-          : [formatDatumDE(t.datum), "----------", "----------", "", "", ""]
-      ),
-      styles: { fontSize: 8, cellPadding: 1.6, halign: "center" },
-      headStyles: { fillColor: [230, 228, 222], textColor: 20, fontStyle: "bold", fontSize: 7.5 },
-      columnStyles: { 0: { halign: "left" } },
-      theme: "grid",
+    const body = tageDerWoche.map((t) => {
+      if (t.art === "arbeit") return [formatDatumDE(t.datum), t.beginn, t.ende, String(t.pauseMin), String(t.dauerStd), formatDatumDE(aufzeichnungsDaten[t.datum] || "")];
+      if (t.art === "abwesenheit") return [formatDatumDE(t.datum), `${t.label} (bezahlt)`, "", "", String(t.dauerStd), ""];
+      return [formatDatumDE(t.datum), "----------", "----------", "", "", ""];
     });
+    const dauerSpalteX = zeichneStundennachweisTabelle(doc, autoTable, y, marginX, body);
 
     let finalY = doc.lastAutoTable.finalY + 8;
     doc.setFont("helvetica", "bold");
     doc.setFontSize(10);
-    doc.text(`Summe: Std. ${summe}`, marginX, finalY);
+    doc.text(`Summe: Std. ${summeWoche}`, dauerSpalteX, finalY);
 
     finalY += 22;
     doc.setFont("helvetica", "normal");
@@ -4691,7 +4763,60 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
     doc.text("(Datum/Unterschrift Arbeitnehmer)", marginX, finalY);
     doc.text("(Datum/Unterschrift Arbeitgeber)", marginX + 95, finalY);
 
-    const dateiname = `Stundennachweis_${(arbeitnehmer || "Mitarbeiter").replace(/[,\s]+/g, "_")}_${jahr}-${String(monat + 1).padStart(2, "0")}.pdf`;
+    const dateiname = `Wochenbericht_${(arbeitnehmer || "Mitarbeiter").replace(/[,\s]+/g, "_")}_KW-${String(kw).padStart(2, "0")}.pdf`;
+    doc.save(dateiname);
+  };
+
+  const pdfErstellen = async () => {
+    const { jsPDF } = await import("jspdf");
+    const { default: autoTable } = await import("jspdf-autotable");
+    const doc = new jsPDF({ unit: "mm", format: "a4" });
+    const marginX = 15;
+    let y = 18;
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(12);
+    doc.text("Monatsbericht Arbeitszeiten (inkl. bezahlter Abwesenheiten)", marginX, y);
+    y += 8;
+
+    doc.setFontSize(9);
+    doc.text("Hinweis:", marginX, y);
+    y += 4.5;
+    doc.setFont("helvetica", "normal");
+    const hinweis = "Urlaub, Krankheit, Fortbildung und Feiertage werden mit 8 Std./Tag berücksichtigt. Dieser Monatsbericht dient der Lohnabrechnung und ersetzt nicht den amtlichen Nachweis nach § 17 Mindestlohngesetz (dort zählt nur tatsächlich geleistete Arbeitszeit).";
+    const hinweisZeilen = doc.splitTextToSize(hinweis, 180);
+    doc.text(hinweisZeilen, marginX, y);
+    y += hinweisZeilen.length * 4 + 5;
+
+    doc.text(`Bezeichnung des Arbeitgebers: ${arbeitgeber}`, marginX, y); y += 5;
+    doc.text(`Name, Vorname des Arbeitnehmers: ${arbeitnehmer}`, marginX, y); y += 5;
+    const monatBeginn = fmt(new Date(jahr, monat, 1));
+    const monatEnde = fmt(new Date(jahr, monat + 1, 0));
+    doc.text(`Zeitraum vom: ${formatDatumDE(monatBeginn)} bis zum ${formatDatumDE(monatEnde)}`, marginX, y);
+    y += 7;
+
+    const body = tage.map((t) => {
+      if (t.art === "arbeit") return [formatDatumDE(t.datum), t.beginn, t.ende, String(t.pauseMin), String(t.dauerStd), formatDatumDE(aufzeichnungsDaten[t.datum] || "")];
+      if (t.art === "abwesenheit") return [formatDatumDE(t.datum), `${t.label} (bezahlt)`, "", "", String(t.dauerStd), ""];
+      return [formatDatumDE(t.datum), "----------", "----------", "", "", ""];
+    });
+    const dauerSpalteX = zeichneStundennachweisTabelle(doc, autoTable, y, marginX, body);
+
+    let finalY = doc.lastAutoTable.finalY + 8;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10);
+    doc.text(`Summe: Std. ${summe}`, dauerSpalteX, finalY);
+
+    finalY += 22;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.line(marginX, finalY, marginX + 70, finalY);
+    doc.line(marginX + 95, finalY, marginX + 165, finalY);
+    finalY += 4;
+    doc.text("(Datum/Unterschrift Arbeitnehmer)", marginX, finalY);
+    doc.text("(Datum/Unterschrift Arbeitgeber)", marginX + 95, finalY);
+
+    const dateiname = `Monatsbericht_${(arbeitnehmer || "Mitarbeiter").replace(/[,\s]+/g, "_")}_${jahr}-${String(monat + 1).padStart(2, "0")}.pdf`;
     doc.save(dateiname);
   };
 
@@ -4745,24 +4870,30 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
         </Field>
       </div>
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-        <div style={{ fontSize: 13.5, fontWeight: 800 }}>Wochendetail (wie bisherige Excel-Liste)</div>
-        <button onClick={excelExportieren} style={{ ...btnSecondary, fontSize: 11.5, display: "flex", alignItems: "center", gap: 5 }}>
-          <Download size={13} /> Als Excel exportieren
-        </button>
-      </div>
+      <div style={{ fontSize: 13.5, fontWeight: 800, marginBottom: 4 }}>Wochendetail (wie bisherige Excel-Liste)</div>
       <div style={{ fontSize: 11.5, color: COLORS.textMuted, marginBottom: 8 }}>
-        Hier korrigieren — die Monatsübersicht unten wird automatisch daraus berechnet.
+        Hier korrigieren — die Monatsübersicht unten wird automatisch daraus berechnet. Urlaub/Krankheit/Fortbildung/Feiertag zählen hier mit 8 Std./Tag.
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
         {wochenGruppen.map(([kw, tageMap]) => {
           const wochenTage = Array.from(tageMap.entries());
           const wochensumme = Math.round(wochenTage.reduce((s, [, zeilen]) => s + zeilen.reduce((ss, z) => ss + (Number(z.stunden) || 0), 0), 0) * 4) / 4;
+          const wochenBeginn = wochenTage[0]?.[0];
+          const wochenEnde = wochenTage[wochenTage.length - 1]?.[0];
           return (
             <div key={kw} style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "hidden" }}>
-              <div style={{ padding: "8px 12px", background: "#FAFAF9", borderBottom: `1px solid ${COLORS.border}`, fontSize: 12, fontWeight: 700, display: "flex", justifyContent: "space-between" }}>
+              <div style={{ padding: "8px 12px", background: "#FAFAF9", borderBottom: `1px solid ${COLORS.border}`, fontSize: 12, fontWeight: 700, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span>KW-{String(kw).padStart(2, "0")}</span>
-                <span>{wochensumme} Std.</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span>{wochensumme} Std.</span>
+                  <button
+                    onClick={() => wochenPdfErstellen(kw, wochenBeginn, wochenEnde)}
+                    title="Wochenbericht als PDF"
+                    style={{ border: "none", background: "transparent", cursor: "pointer", color: COLORS.accent, display: "flex", alignItems: "center" }}
+                  >
+                    <FileText size={15} />
+                  </button>
+                </div>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "82px 1fr 1.4fr 56px 28px", gap: 0, padding: "6px 12px", fontSize: 10.5, fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase" }}>
                 <div>Datum</div>
@@ -4836,7 +4967,7 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
               background: istWochenende ? hexToRgba(COLORS.accent, 0.03) : "transparent",
             }}>
               <div style={{ fontWeight: 600 }}>{formatDatumDE(t.datum)}</div>
-              {t.arbeitstag ? (
+              {t.art === "arbeit" && (
                 <>
                   <div>{t.beginn}</div>
                   <div>{t.ende}</div>
@@ -4848,9 +4979,15 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
                     style={{ ...inputStyle, padding: "3px 4px", fontSize: 10.5 }}
                   />
                 </>
-              ) : (
+              )}
+              {t.art === "abwesenheit" && (
+                <div style={{ gridColumn: "span 5", color: COLORS.textDark, fontStyle: "italic", fontSize: 11.5 }}>
+                  {t.label} — {t.dauerStd} Std. (bezahlt, nicht gearbeitet)
+                </div>
+              )}
+              {t.art === "leer" && (
                 <div style={{ gridColumn: "span 5", color: COLORS.textMuted, fontStyle: "italic", fontSize: 11.5 }}>
-                  {t.abwesenheit ? `${ABWESENHEIT_LABEL[t.abwesenheit.typ] || t.abwesenheit.typ} — kein Arbeitstag` : "kein Arbeitstag"}
+                  kein Arbeitstag
                 </div>
               )}
             </div>
