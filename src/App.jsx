@@ -396,6 +396,9 @@ function mapAbwesenheitRow(row) {
   };
 }
 const ABWESENHEIT_LABEL = { urlaub: "Urlaub", krankheit: "Krankheit", fortbildung: "Fortbildung", feiertag: "Feiertag" };
+// Libellés exacts attendus dans le PDF (Stundennachweis), conformes au
+// modèle de référence utilisé jusqu'ici par Amin/Alexandra.
+const PDF_ABWESENHEIT_LABEL = { Urlaub: "URLAUB", Krankheit: "KRANK", Fortbildung: "FORTBILDUNG", Feiertag: "FEIERTAG" };
 function mapStundennachweisEintragRow(row) {
   return {
     id: row.id,
@@ -4736,26 +4739,26 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
 
     doc.setFont("helvetica", "bold");
     doc.setFontSize(12);
-    doc.text("Wochenbericht Arbeitszeiten (inkl. bezahlter Abwesenheiten)", marginX, y);
+    doc.text("Aufzeichnung der Arbeitszeiten gemäß § 17 Mindestlohngesetz", marginX, y);
     y += 8;
 
     doc.setFontSize(9);
-    doc.text("Hinweis:", marginX, y);
+    doc.text("Wichtiger Hinweis:", marginX, y);
     y += 4.5;
     doc.setFont("helvetica", "normal");
-    const hinweis = "Urlaub, Krankheit, Fortbildung und Feiertage werden mit 8 Std./Tag berücksichtigt. Dieser Wochenbericht dient der Lohnabrechnung und ersetzt nicht den amtlichen Nachweis nach § 17 Mindestlohngesetz (dort zählt nur tatsächlich geleistete Arbeitszeit).";
+    const hinweis = "Die Aufzeichnungen müssen spätestens mit Ablauf des 7. Kalendertages erstellt werden, der auf den Tag der Arbeitsleistung folgt. Sie sind 2 Jahre lang aufzubewahren, beginnend ab dem Tag, den für die Aufzeichnung maßgeblichen Zeitpunkt.";
     const hinweisZeilen = doc.splitTextToSize(hinweis, 180);
     doc.text(hinweisZeilen, marginX, y);
     y += hinweisZeilen.length * 4 + 5;
 
     doc.text(`Bezeichnung des Arbeitgebers: ${arbeitgeber}`, marginX, y); y += 5;
     doc.text(`Name, Vorname des Arbeitnehmers: ${arbeitnehmer}`, marginX, y); y += 5;
-    doc.text(`Woche KW-${String(kw).padStart(2, "0")}, vom: ${formatDatumDE(wochenBeginn)} bis zum ${formatDatumDE(wochenEnde)}`, marginX, y);
+    doc.text(`Aufzeichnung für die Zeit vom: ${formatDatumDE(wochenBeginn)} bis zum ${formatDatumDE(wochenEnde)}`, marginX, y);
     y += 7;
 
     const body = tageDerWoche.map((t) => {
       if (t.art === "arbeit") return [formatDatumDE(t.datum), t.beginn, t.ende, String(t.pauseMin), String(t.dauerStd), formatDatumDE(aufzeichnungsDaten[t.datum] || "")];
-      if (t.art === "abwesenheit") return [formatDatumDE(t.datum), `${t.label} (bezahlt)`, "", "", String(t.dauerStd), ""];
+      if (t.art === "abwesenheit") return [formatDatumDE(t.datum), PDF_ABWESENHEIT_LABEL[t.label] || t.label, "", "", String(t.dauerStd), formatDatumDE(aufzeichnungsDaten[t.datum] || "")];
       return [formatDatumDE(t.datum), "----------", "----------", "", "", ""];
     });
     const dauerSpalteX = zeichneStundennachweisTabelle(doc, autoTable, y, marginX, body);
@@ -4774,7 +4777,7 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
     doc.text("(Datum/Unterschrift Arbeitnehmer)", marginX, finalY);
     doc.text("(Datum/Unterschrift Arbeitgeber)", marginX + 95, finalY);
 
-    const dateiname = `Wochenbericht_${(arbeitnehmer || "Mitarbeiter").replace(/[,\s]+/g, "_")}_KW-${String(kw).padStart(2, "0")}.pdf`;
+    const dateiname = `Stundennachweis_${(arbeitnehmer || "Mitarbeiter").replace(/[,\s]+/g, "_")}_KW-${String(kw).padStart(2, "0")}.pdf`;
     doc.save(dateiname);
   };
 
@@ -4787,14 +4790,14 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
 
     doc.setFont("helvetica", "bold");
     doc.setFontSize(12);
-    doc.text("Monatsbericht Arbeitszeiten (inkl. bezahlter Abwesenheiten)", marginX, y);
+    doc.text("Aufzeichnung der Arbeitszeiten gemäß § 17 Mindestlohngesetz", marginX, y);
     y += 8;
 
     doc.setFontSize(9);
-    doc.text("Hinweis:", marginX, y);
+    doc.text("Wichtiger Hinweis:", marginX, y);
     y += 4.5;
     doc.setFont("helvetica", "normal");
-    const hinweis = "Urlaub, Krankheit, Fortbildung und Feiertage werden mit 8 Std./Tag berücksichtigt. Dieser Monatsbericht dient der Lohnabrechnung und ersetzt nicht den amtlichen Nachweis nach § 17 Mindestlohngesetz (dort zählt nur tatsächlich geleistete Arbeitszeit).";
+    const hinweis = "Die Aufzeichnungen müssen spätestens mit Ablauf des 7. Kalendertages erstellt werden, der auf den Tag der Arbeitsleistung folgt. Sie sind 2 Jahre lang aufzubewahren, beginnend ab dem Tag, den für die Aufzeichnung maßgeblichen Zeitpunkt.";
     const hinweisZeilen = doc.splitTextToSize(hinweis, 180);
     doc.text(hinweisZeilen, marginX, y);
     y += hinweisZeilen.length * 4 + 5;
@@ -4803,12 +4806,12 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
     doc.text(`Name, Vorname des Arbeitnehmers: ${arbeitnehmer}`, marginX, y); y += 5;
     const monatBeginn = fmt(new Date(jahr, monat, 1));
     const monatEnde = fmt(new Date(jahr, monat + 1, 0));
-    doc.text(`Zeitraum vom: ${formatDatumDE(monatBeginn)} bis zum ${formatDatumDE(monatEnde)}`, marginX, y);
+    doc.text(`Aufzeichnung für die Zeit vom: ${formatDatumDE(monatBeginn)} bis zum ${formatDatumDE(monatEnde)}`, marginX, y);
     y += 7;
 
     const body = tage.map((t) => {
       if (t.art === "arbeit") return [formatDatumDE(t.datum), t.beginn, t.ende, String(t.pauseMin), String(t.dauerStd), formatDatumDE(aufzeichnungsDaten[t.datum] || "")];
-      if (t.art === "abwesenheit") return [formatDatumDE(t.datum), `${t.label} (bezahlt)`, "", "", String(t.dauerStd), ""];
+      if (t.art === "abwesenheit") return [formatDatumDE(t.datum), PDF_ABWESENHEIT_LABEL[t.label] || t.label, "", "", String(t.dauerStd), formatDatumDE(aufzeichnungsDaten[t.datum] || "")];
       return [formatDatumDE(t.datum), "----------", "----------", "", "", ""];
     });
     const dauerSpalteX = zeichneStundennachweisTabelle(doc, autoTable, y, marginX, body);
@@ -4827,7 +4830,7 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
     doc.text("(Datum/Unterschrift Arbeitnehmer)", marginX, finalY);
     doc.text("(Datum/Unterschrift Arbeitgeber)", marginX + 95, finalY);
 
-    const dateiname = `Monatsbericht_${(arbeitnehmer || "Mitarbeiter").replace(/[,\s]+/g, "_")}_${jahr}-${String(monat + 1).padStart(2, "0")}.pdf`;
+    const dateiname = `Stundennachweis_${(arbeitnehmer || "Mitarbeiter").replace(/[,\s]+/g, "_")}_${jahr}-${String(monat + 1).padStart(2, "0")}.pdf`;
     doc.save(dateiname);
   };
 
