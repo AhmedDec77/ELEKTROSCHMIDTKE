@@ -3704,6 +3704,9 @@ function KundenListPage({ kunden, baustellen, onOpenSidebar, onNew, onEdit, erro
 
 function RessourcenPage({ baustellen, mitarbeiter, abwesenheiten, stundennachweis, arbeitszeiten, pausen, isAdmin, currentUserId, onOpenSidebar, onBaustelleClick, onAddAbwesenheit, onRemoveAbwesenheit, onSaveStundennachweis, error }) {
   const [modus, setModus] = useState("verfuegbarkeit"); // verfuegbarkeit | stunden | abwesenheiten
+  // Un profil privé (ex. "Amin 2") n'a pas sa place dans Ressourcen — c'est
+  // un calendrier à usage strictement personnel, jamais un employé à gérer.
+  const mitarbeiterOhnePrivat = mitarbeiter.filter((m) => !m.privatFuer);
 
   return (
     <>
@@ -3732,14 +3735,14 @@ function RessourcenPage({ baustellen, mitarbeiter, abwesenheiten, stundennachwei
 
       <div style={{ flex: 1, overflow: "auto", padding: 20 }}>
         {modus === "verfuegbarkeit" && (
-          <VerfuegbarkeitPruefen baustellen={baustellen} mitarbeiter={mitarbeiter} abwesenheiten={abwesenheiten} onBaustelleClick={onBaustelleClick} />
+          <VerfuegbarkeitPruefen baustellen={baustellen} mitarbeiter={mitarbeiterOhnePrivat} abwesenheiten={abwesenheiten} onBaustelleClick={onBaustelleClick} />
         )}
         {modus === "stunden" && (
-          <StundenUebersicht baustellen={baustellen} mitarbeiter={mitarbeiter} abwesenheiten={abwesenheiten} />
+          <StundenUebersicht baustellen={baustellen} mitarbeiter={mitarbeiterOhnePrivat} abwesenheiten={abwesenheiten} />
         )}
         {modus === "abwesenheiten" && (
           <AbwesenheitenPage
-            mitarbeiter={mitarbeiter}
+            mitarbeiter={mitarbeiterOhnePrivat}
             abwesenheiten={abwesenheiten}
             isAdmin={isAdmin}
             currentUserId={currentUserId}
@@ -3749,7 +3752,7 @@ function RessourcenPage({ baustellen, mitarbeiter, abwesenheiten, stundennachwei
         )}
         {modus === "stundennachweis" && (
           <StundennachweisPage
-            mitarbeiter={mitarbeiter}
+            mitarbeiter={mitarbeiterOhnePrivat}
             baustellen={baustellen}
             abwesenheiten={abwesenheiten}
             stundennachweis={stundennachweis}
