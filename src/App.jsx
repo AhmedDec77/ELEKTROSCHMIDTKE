@@ -2429,6 +2429,7 @@ function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, abwesenh
           const spalte = i % 7;
           const istWochenende = spalte === 5 || spalte === 6; // Sa, So
           const ds = fmt(date);
+          const istFeiertag = istBayerischerFeiertag(ds);
           const abwesendeHeute = (abwesenheiten || [])
             .filter((a) => a.beginn <= ds && ds <= a.ende)
             .map((a) => alleMitarbeiter.find((m) => m.id === a.mitarbeiterId))
@@ -2439,13 +2440,13 @@ function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, abwesenh
               onClick={() => onDayClick(date)}
               style={{
                 minHeight: 96, minWidth: 0, cursor: "pointer",
-                background: dimmed ? "#FAFAF9" : istWochenende ? "#FDF9F9" : COLORS.card,
+                background: dimmed ? "#FAFAF9" : istFeiertag ? "#FFF6E5" : istWochenende ? "#FDF9F9" : COLORS.card,
                 display: "flex", flexDirection: "column",
               }}
             >
               <div style={{
                 padding: "5px 7px", borderBottom: `1px solid ${COLORS.borderSoft}`,
-                display: "flex", alignItems: "center", background: isToday ? "#FFF3EA" : "transparent",
+                display: "flex", alignItems: "center", justifyContent: "space-between", background: isToday ? "#FFF3EA" : "transparent",
               }}>
                 <span style={{
                   fontSize: 12, fontWeight: isToday ? 800 : 700, color: dimmed ? COLORS.textMuted : COLORS.textDark,
@@ -2455,6 +2456,9 @@ function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, abwesenh
                 }}>
                   {date.getDate()}
                 </span>
+                {istFeiertag && !dimmed && (
+                  <span style={{ fontSize: 9, fontWeight: 700, color: "#B45309" }}>Feiertag</span>
+                )}
               </div>
               <div style={{ padding: 6, display: "flex", flexDirection: "column", gap: 2, minWidth: 0, flex: 1 }}>
                 {items.slice(0, 3).map((b) => {
@@ -2540,17 +2544,21 @@ function ResourceView({ dates, mitarbeiter, baustellen, alleMitarbeiter, abwesen
         {dates.map((d, i) => {
           const isToday = isSameDay(d, today);
           const istWochenende = d.getDay() === 0 || d.getDay() === 6;
+          const istFeiertag = istBayerischerFeiertag(fmt(d));
           return (
             <div key={i} style={{
               padding: "10px 8px", textAlign: "center", borderLeft: `1px solid ${COLORS.borderSoft}`,
-              background: isToday ? "#FFF3EA" : istWochenende ? hexToRgba(COLORS.accent, 0.045) : "transparent", minWidth: 0,
+              background: isToday ? "#FFF3EA" : istFeiertag ? "#FFF6E5" : istWochenende ? hexToRgba(COLORS.accent, 0.045) : "transparent", minWidth: 0,
             }}>
-              <div style={{ fontSize: 10.5, fontWeight: 700, color: istWochenende && !isToday ? COLORS.accentDark : COLORS.textMuted, textTransform: "uppercase" }}>
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: istFeiertag ? "#B45309" : istWochenende && !isToday ? COLORS.accentDark : COLORS.textMuted, textTransform: "uppercase" }}>
                 {d.toLocaleDateString("de-DE", { weekday: "short" })}
               </div>
               <div style={{ fontSize: 14, fontWeight: 800, color: isToday ? COLORS.accentDark : COLORS.textDark }}>
                 {d.getDate()}
               </div>
+              {istFeiertag && (
+                <div style={{ fontSize: 8.5, fontWeight: 700, color: "#B45309" }}>Feiertag</div>
+              )}
             </div>
           );
         })}
