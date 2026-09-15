@@ -2621,7 +2621,7 @@ function ResourceView({ dates, mitarbeiter, baustellen, alleMitarbeiter, abwesen
                       }}
                     >
                       <div style={{ fontWeight: 700, color: COLORS.textDark, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {istPrivat && "🔒 Privé — "}{b.kunde}
+                        {istPrivat && "🔒 "}{b.kunde}
                       </div>
                       {formatAdresse(b) && (
                         <div style={{ color: COLORS.textMuted, fontSize: 10.5, display: "flex", alignItems: "center", gap: 3, minWidth: 0, overflow: "hidden" }}>
