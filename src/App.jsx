@@ -4667,19 +4667,19 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
   // Génère le corps du tableau + calcule où se trouve la colonne "Dauer",
   // pour que le total (Summe) s'aligne verticalement dessus — utilisé par
   // le rapport mensuel légal ET le rapport hebdomadaire.
-  const zeichneStundennachweisTabelle = (doc, autoTable, startY, marginX, body) => {
+  const zeichneStundennachweisTabelle = (doc, autoTable, startY, marginX, head, body, dauerSpalteIndex) => {
     let dauerSpalteX = marginX;
     autoTable(doc, {
       startY,
       margin: { left: marginX, right: marginX },
-      head: [["Datum der\nArbeitsleistung", "Uhrzeit Beginn\nder Arbeitsleistung", "Uhrzeit Ende\nder Arbeitsleistung", "Pause\nin Min.", "Dauer der\nArbeitsleistung (Std.)", "Datum der\nAufzeichnung"]],
+      head: [head],
       body,
       styles: { fontSize: 8, cellPadding: 1.6, halign: "center" },
       headStyles: { fillColor: [230, 228, 222], textColor: 20, fontStyle: "bold", fontSize: 7.5 },
       columnStyles: { 0: { halign: "left" } },
       theme: "grid",
       didDrawCell: (data) => {
-        if (data.section === "head" && data.column.index === 4) dauerSpalteX = data.cell.x;
+        if (data.section === "head" && data.column.index === dauerSpalteIndex) dauerSpalteX = data.cell.x;
       },
     });
     return dauerSpalteX;
@@ -4740,12 +4740,14 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
       const eintraegeTag = eintraege.filter((e) => e.datum === ds && Number(e.stunden) > 0);
       const dauerStd = Math.round(eintraegeTag.reduce((s, e) => s + (Number(e.stunden) || 0), 0) * 4) / 4;
       const nurAbwesenheit = eintraegeTag.length > 0 && eintraegeTag.every((e) => e.istAbwesenheit);
-      if (dauerStd <= 0) return { datum: ds, art: "leer" };
-      if (nurAbwesenheit) return { datum: ds, art: "abwesenheit", label: eintraegeTag[0].kunde, dauerStd };
+      const kundeText = [...new Set(eintraegeTag.map((e) => e.kunde).filter(Boolean))].join(", ");
+      const leistungText = [...new Set(eintraegeTag.map((e) => e.leistung).filter(Boolean))].join("; ");
+      if (dauerStd <= 0) return { datum: ds, art: "leer", kundeText: "", leistungText: "" };
+      if (nurAbwesenheit) return { datum: ds, art: "abwesenheit", label: eintraegeTag[0].kunde, dauerStd, kundeText, leistungText };
       const pauseMin = 60;
       const endeDez = 8 + pauseMin / 60 + dauerStd;
       const eh = Math.floor(endeDez), em = Math.round((endeDez - eh) * 60);
-      return { datum: ds, art: "arbeit", beginn: ARBEITSTAG_START, ende: `${String(eh).padStart(2, "0")}:${String(em).padStart(2, "0")}`, pauseMin, dauerStd };
+      return { datum: ds, art: "arbeit", beginn: ARBEITSTAG_START, ende: `${String(eh).padStart(2, "0")}:${String(em).padStart(2, "0")}`, pauseMin, dauerStd, kundeText, leistungText };
     });
     const summeWoche = Math.round(tageDerWoche.reduce((s, t) => s + (t.dauerStd || 0), 0) * 4) / 4;
 
@@ -4768,12 +4770,13 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
     doc.text(`Aufzeichnung für die Zeit vom: ${formatDatumDE(wochenBeginn)} bis zum ${formatDatumDE(wochenEnde)}`, marginX, y);
     y += 7;
 
+    const wochenHead = ["Datum der\nArbeitsleistung", "Kunde", "Leistung", "Uhrzeit Beginn\nder Arbeitsleistung", "Uhrzeit Ende\nder Arbeitsleistung", "Pause\nin Min.", "Dauer der\nArbeitsleistung (Std.)", "Datum der\nAufzeichnung"];
     const body = tageDerWoche.map((t) => {
-      if (t.art === "arbeit") return [formatDatumDE(t.datum), t.beginn, t.ende, String(t.pauseMin), String(t.dauerStd), formatDatumDE(aufzeichnungsDaten[t.datum] || "")];
-      if (t.art === "abwesenheit") return [formatDatumDE(t.datum), PDF_ABWESENHEIT_LABEL[t.label] || t.label, "", "", String(t.dauerStd), formatDatumDE(aufzeichnungsDaten[t.datum] || "")];
-      return [formatDatumDE(t.datum), "----------", "----------", "", "", ""];
+      if (t.art === "arbeit") return [formatDatumDE(t.datum), t.kundeText, t.leistungText, t.beginn, t.ende, String(t.pauseMin), String(t.dauerStd), formatDatumDE(aufzeichnungsDaten[t.datum] || "")];
+      if (t.art === "abwesenheit") return [formatDatumDE(t.datum), t.kundeText, t.leistungText, PDF_ABWESENHEIT_LABEL[t.label] || t.label, "", "", String(t.dauerStd), formatDatumDE(aufzeichnungsDaten[t.datum] || "")];
+      return [formatDatumDE(t.datum), "", "", "----------", "----------", "", "", ""];
     });
-    const dauerSpalteX = zeichneStundennachweisTabelle(doc, autoTable, y, marginX, body);
+    const dauerSpalteX = zeichneStundennachweisTabelle(doc, autoTable, y, marginX, wochenHead, body, 6);
 
     let finalY = doc.lastAutoTable.finalY + 8;
     doc.setFont("helvetica", "bold");
@@ -4821,12 +4824,13 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
     doc.text(`Aufzeichnung für die Zeit vom: ${formatDatumDE(monatBeginn)} bis zum ${formatDatumDE(monatEnde)}`, marginX, y);
     y += 7;
 
+    const monatsHead = ["Datum der\nArbeitsleistung", "Uhrzeit Beginn\nder Arbeitsleistung", "Uhrzeit Ende\nder Arbeitsleistung", "Pause\nin Min.", "Dauer der\nArbeitsleistung (Std.)", "Datum der\nAufzeichnung"];
     const body = tage.map((t) => {
       if (t.art === "arbeit") return [formatDatumDE(t.datum), t.beginn, t.ende, String(t.pauseMin), String(t.dauerStd), formatDatumDE(aufzeichnungsDaten[t.datum] || "")];
       if (t.art === "abwesenheit") return [formatDatumDE(t.datum), PDF_ABWESENHEIT_LABEL[t.label] || t.label, "", "", String(t.dauerStd), formatDatumDE(aufzeichnungsDaten[t.datum] || "")];
       return [formatDatumDE(t.datum), "----------", "----------", "", "", ""];
     });
-    const dauerSpalteX = zeichneStundennachweisTabelle(doc, autoTable, y, marginX, body);
+    const dauerSpalteX = zeichneStundennachweisTabelle(doc, autoTable, y, marginX, monatsHead, body, 4);
 
     let finalY = doc.lastAutoTable.finalY + 8;
     doc.setFont("helvetica", "bold");
