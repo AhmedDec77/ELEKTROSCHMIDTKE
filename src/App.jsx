@@ -237,6 +237,10 @@ function eintraegeFuerTag(mitarbeiterId, ds, baustellen) {
   const dateObj = new Date(ds + "T00:00:00");
   const eintraege = [];
   for (const b of baustellen) {
+    // Un rendez-vous marqué "privé"/"Privat" (blocage du calendrier public
+    // pour un créneau réservé sur le profil privé lié) ne doit jamais
+    // compter dans le rapport d'heures.
+    if (/priv[eé]/i.test(b.kunde || "") || /priv[eé]/i.test(b.beschreibung || "")) continue;
     const z = (b.zuweisungen || []).find((zz) => zz.mitarbeiterId === mitarbeiterId);
     if (z && isZuweisungAktivAm(z, dateObj)) {
       eintraege.push({ baustelleId: b.id, kunde: b.kunde, leistung: b.beschreibung || "", startzeit: b.startzeit || "", endzeit: b.endzeit || "" });
@@ -2489,7 +2493,9 @@ function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, abwesenh
                           <span style={{ width: 6, height: 6, borderRadius: "50%", background: COLORS.textMuted, flexShrink: 0 }} />
                         )}
                       </span>
-                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{b.kunde}</span>
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                        {aktiveMitarbeiter.length > 0 && aktiveMitarbeiter.every((m) => m.privatFuer) && "🔒 "}{b.kunde}
+                      </span>
                     </div>
                   );
                 })}
@@ -2603,6 +2609,8 @@ function ResourceView({ dates, mitarbeiter, baustellen, alleMitarbeiter, abwesen
                 )}
                 {items.map((b) => {
                   const rowColor = person.farbe || COLORS.textMuted;
+                  const zugewieseneMitarbeiter = (b.zuweisungen || []).map((z) => alleMitarbeiter.find((m) => m.id === z.mitarbeiterId)).filter(Boolean);
+                  const istPrivat = zugewieseneMitarbeiter.length > 0 && zugewieseneMitarbeiter.every((m) => m.privatFuer);
                   return (
                     <div
                       key={b.id}
@@ -2612,7 +2620,9 @@ function ResourceView({ dates, mitarbeiter, baustellen, alleMitarbeiter, abwesen
                         borderRadius: 5, padding: "4px 6px", fontSize: 11.5, minWidth: 0, maxWidth: "100%", boxSizing: "border-box",
                       }}
                     >
-                      <div style={{ fontWeight: 700, color: COLORS.textDark, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.kunde}</div>
+                      <div style={{ fontWeight: 700, color: COLORS.textDark, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {istPrivat && "🔒 Privé — "}{b.kunde}
+                      </div>
                       {formatAdresse(b) && (
                         <div style={{ color: COLORS.textMuted, fontSize: 10.5, display: "flex", alignItems: "center", gap: 3, minWidth: 0, overflow: "hidden" }}>
                           <MapPin size={9} style={{ flexShrink: 0 }} />
@@ -4559,7 +4569,9 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
     setArbeitnehmer(p ? (p.nachname ? `${p.nachname}, ${p.name}` : p.name) : "");
     const monatBeginn = fmt(new Date(jahr, monat, 1));
     const monatEnde = fmt(new Date(jahr, monat + 1, 0));
-    const gespeicherte = (stundennachweis || []).filter((e) => e.mitarbeiterId === mitarbeiterId && e.datum >= monatBeginn && e.datum <= monatEnde);
+    const gespeicherte = (stundennachweis || [])
+      .filter((e) => e.mitarbeiterId === mitarbeiterId && e.datum >= monatBeginn && e.datum <= monatEnde)
+      .filter((e) => !/priv[eé]/i.test(e.kunde || "") && !/priv[eé]/i.test(e.leistung || ""));
     if (gespeicherte.length > 0) {
       setEintraege(gespeicherte.map((e) => ({ id: e.id, datum: e.datum, kunde: e.kunde, leistung: e.leistung, stunden: e.stunden })));
       const daten = {};
