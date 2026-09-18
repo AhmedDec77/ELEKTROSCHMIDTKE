@@ -1076,9 +1076,9 @@ function BaustellenplanungInnen() {
   const findConflicts = (candidateForm) => {
     const conflicts = [];
     for (const z of candidateForm.zuweisungen) {
-      // Un profil privé (ex. "Amin 2") ne génère et ne subit jamais de
-      // conflit — son calendrier n'est qu'un reflet, il ne doit jamais
-      // bloquer la réservation d'un rendez-vous sur le profil public.
+      // Un profil privé (ex. "Amin Privat") ne génère et ne subit jamais de
+      // conflit — aucun blocage entre le calendrier privé et le calendrier
+      // public : les deux restent totalement indépendants.
       const zMitarbeiter = data.mitarbeiter.find((m) => m.id === z.mitarbeiterId);
       if (zMitarbeiter?.privatFuer) continue;
       for (const other of data.baustellen) {
@@ -1094,6 +1094,7 @@ function BaustellenplanungInnen() {
     }
     return conflicts;
   };
+
 
   // Détermine automatiquement à quel projet rattacher un NOUVEAU rendez-vous,
   // en fonction des projets déjà actifs du client concerné.
@@ -1146,6 +1147,29 @@ function BaustellenplanungInnen() {
     return null;
   };
 
+  // Client + projet TECHNIQUES partagés "Privat" — jamais affichés dans
+  // Kunden/Projekte/Ressourcen (voir istBaustellePrivat plus bas), créés une
+  // seule fois puis toujours réutilisés. Ils existent uniquement pour
+  // satisfaire la contrainte technique "tout Termin appartient à un projet",
+  // sans jamais faire apparaître de vrai client/projet pour un événement privé.
+  const holePrivatKundeUndProjekt = async () => {
+    let privatKunde = data.kunden.find((k) => k.name === "Privat");
+    if (!privatKunde) {
+      const { data: neu, error: err } = await supabase.from("kunden").insert({ name: "Privat" }).select().single();
+      if (err) { setError(`Fehler: ${err.message}`); return null; }
+      privatKunde = mapKundeRow(neu);
+      setData((d) => ({ ...d, kunden: [...d.kunden, privatKunde] }));
+    }
+    let privatProjekt = data.projekte.find((p) => p.titel === "Privat" && p.kundeId === privatKunde.id);
+    if (!privatProjekt) {
+      const { data: neu, error: err } = await supabase.from("projekte").insert({ titel: "Privat", kunde_id: privatKunde.id, status: "aktiv" }).select().single();
+      if (err) { setError(`Fehler: ${err.message}`); return null; }
+      privatProjekt = mapProjektRow(neu);
+      setData((d) => ({ ...d, projekte: [privatProjekt, ...d.projekte] }));
+    }
+    return { kundeId: privatKunde.id, projektId: privatProjekt.id };
+  };
+
   // Crée un Termin générique "Privat" sur le(s) calendrier(s) public(s) des
   // propriétaires des profils privés concernés, pour marquer le créneau
   // comme occupé — sans jamais révéler le motif réel du rendez-vous privé.
@@ -1158,26 +1182,15 @@ function BaustellenplanungInnen() {
     )];
     if (eigentuemerIds.length === 0) return;
 
-    let privatKunde = data.kunden.find((k) => k.name === "Privat");
-    if (!privatKunde) {
-      const { data: neu, error: err } = await supabase.from("kunden").insert({ name: "Privat" }).select().single();
-      if (err) { setError(`Fehler: ${err.message}`); return; }
-      privatKunde = mapKundeRow(neu);
-      setData((d) => ({ ...d, kunden: [...d.kunden, privatKunde] }));
-    }
-    let privatProjekt = data.projekte.find((p) => p.titel === "Privat" && p.kundeId === privatKunde.id);
-    if (!privatProjekt) {
-      const { data: neu, error: err } = await supabase.from("projekte").insert({ titel: "Privat", kunde_id: privatKunde.id, status: "aktiv" }).select().single();
-      if (err) { setError(`Fehler: ${err.message}`); return; }
-      privatProjekt = mapProjektRow(neu);
-      setData((d) => ({ ...d, projekte: [privatProjekt, ...d.projekte] }));
-    }
+    const ids = await holePrivatKundeUndProjekt();
+    if (!ids) return;
+    const { kundeId: privatKundeId, projektId: privatProjektId } = ids;
 
     for (const eigentuemerId of eigentuemerIds) {
       const { data: neueBaustelle, error: bErr } = await supabase
         .from("baustellen")
         .insert({
-          projekt_id: privatProjekt.id, kunde_id: privatKunde.id, kunde: "Privat",
+          projekt_id: privatProjektId, kunde_id: privatKundeId, kunde: "Privat",
           kontakt_name: "", kontakt_telefon: "", beschreibung: "",
           strasse: "", plz: "", stadt: "",
           beginn, ende, samstag_aktiv: samstagAktiv, sonntag_aktiv: sonntagAktiv,
@@ -1189,7 +1202,7 @@ function BaustellenplanungInnen() {
       setData((d) => ({
         ...d,
         baustellen: [...d.baustellen, {
-          id: neueBaustelle.id, projektId: privatProjekt.id, kundeId: privatKunde.id, kunde: "Privat",
+          id: neueBaustelle.id, projektId: privatProjektId, kundeId: privatKundeId, kunde: "Privat",
           kontaktName: "", kontaktTelefon: "", beschreibung: "", strasse: "", plz: "", stadt: "",
           beginn, ende, samstagAktiv, sonntagAktiv, startzeit: "", endzeit: "",
           zuweisungen: [{ mitarbeiterId: eigentuemerId, beginn, ende }],
@@ -1213,39 +1226,56 @@ function BaustellenplanungInnen() {
       return;
     }
 
-    // Si aucun client existant n'est lié, on en crée un nouveau à la volée
-    // (réutilisable ensuite pour d'autres projets), sans jamais modifier
-    // rétroactivement un client déjà lié quand on édite un projet existant.
-    let kundeId = form.kundeId;
-    if (!kundeId) {
-      const { data: neuerKunde, error: kErr } = await supabase
-        .from("kunden")
-        .insert({
-          name: form.kunde.trim(),
-          kontakt_name: form.kontaktName.trim(),
-          kontakt_telefon: form.kontaktTelefon.trim(),
-          strasse: form.strasse.trim(),
-          plz: form.plz.trim(),
-          stadt: form.stadt.trim(),
-        })
-        .select()
-        .single();
-      if (kErr) { setError(`Fehler beim Anlegen des Kunden: ${kErr.message}`); return; }
-      kundeId = neuerKunde.id;
-      setData((d) => ({ ...d, kunden: [...d.kunden, mapKundeRow(neuerKunde)].sort((a, b) => a.name.localeCompare(b.name)) }));
-    }
+    // Un Termin réservé EXCLUSIVEMENT sur un/des profil(s) privé(s) (ex.
+    // "Amin Privat") n'implique jamais de vrai client ni de vrai projet :
+    // pas de prompt, pas de création — on rattache directement au client +
+    // projet techniques partagés "Privat" (jamais affichés nulle part).
+    const zugewieseneMitarbeiterObjekte = form.zuweisungen
+      .map((z) => data.mitarbeiter.find((m) => m.id === z.mitarbeiterId))
+      .filter(Boolean);
+    const istPrivateBuchung = zugewieseneMitarbeiterObjekte.length > 0 && zugewieseneMitarbeiterObjekte.every((m) => m.privatFuer);
 
-    // Projekt : résolu automatiquement pour un NOUVEAU Termin. Pour un Termin
-    // déjà existant, le projet reste inchangé — SAUF si l'utilisateur a
-    // explicitement utilisé "Projekt ändern" et tapé un nouveau titre non
-    // trouvé dans la liste, auquel cas on crée ce nouveau projet.
-    let projektId = form.projektId;
-    if (!form.id) {
-      projektId = await resolveProjektFuerBuchung(kundeId, form.kunde.trim());
-      if (!projektId) return; // l'utilisateur a annulé une étape du choix — on n'enregistre rien
-    } else if (!projektId && form.projektTitelEingabe.trim()) {
-      projektId = await erstelleNeuesProjekt(kundeId, form.kunde.trim(), form.projektTitelEingabe.trim());
-      if (!projektId) return;
+    let kundeId, projektId;
+    if (istPrivateBuchung) {
+      const ids = await holePrivatKundeUndProjekt();
+      if (!ids) return;
+      kundeId = ids.kundeId;
+      projektId = ids.projektId;
+    } else {
+      // Si aucun client existant n'est lié, on en crée un nouveau à la volée
+      // (réutilisable ensuite pour d'autres projets), sans jamais modifier
+      // rétroactivement un client déjà lié quand on édite un projet existant.
+      kundeId = form.kundeId;
+      if (!kundeId) {
+        const { data: neuerKunde, error: kErr } = await supabase
+          .from("kunden")
+          .insert({
+            name: form.kunde.trim(),
+            kontakt_name: form.kontaktName.trim(),
+            kontakt_telefon: form.kontaktTelefon.trim(),
+            strasse: form.strasse.trim(),
+            plz: form.plz.trim(),
+            stadt: form.stadt.trim(),
+          })
+          .select()
+          .single();
+        if (kErr) { setError(`Fehler beim Anlegen des Kunden: ${kErr.message}`); return; }
+        kundeId = neuerKunde.id;
+        setData((d) => ({ ...d, kunden: [...d.kunden, mapKundeRow(neuerKunde)].sort((a, b) => a.name.localeCompare(b.name)) }));
+      }
+
+      // Projekt : résolu automatiquement pour un NOUVEAU Termin. Pour un Termin
+      // déjà existant, le projet reste inchangé — SAUF si l'utilisateur a
+      // explicitement utilisé "Projekt ändern" et tapé un nouveau titre non
+      // trouvé dans la liste, auquel cas on crée ce nouveau projet.
+      projektId = form.projektId;
+      if (!form.id) {
+        projektId = await resolveProjektFuerBuchung(kundeId, form.kunde.trim());
+        if (!projektId) return; // l'utilisateur a annulé une étape du choix — on n'enregistre rien
+      } else if (!projektId && form.projektTitelEingabe.trim()) {
+        projektId = await erstelleNeuesProjekt(kundeId, form.kunde.trim(), form.projektTitelEingabe.trim());
+        if (!projektId) return;
+      }
     }
 
     const baustelleFields = {
@@ -1408,12 +1438,33 @@ function BaustellenplanungInnen() {
     return zugewiesene.some((m) => !m.privatFuer || m.privatFuer === currentUserId);
   };
 
+  // Un Termin ne doit jamais faire allusion à "Privat" dans Projekte/Kunden/
+  // Ressourcen : ni une réservation exclusivement sur profil(s) privé(s), ni
+  // une entrée de blocage du calendrier public (kunde/description "Privat" —
+  // même convention que eintraegeFuerTag) assignée au profil réel.
+  const istBaustellePrivat = (b) => {
+    if (/priv[eé]/i.test(b.kunde || "") || /priv[eé]/i.test(b.beschreibung || "")) return true;
+    const zugewiesene = (b.zuweisungen || []).map((z) => data.mitarbeiter.find((m) => m.id === z.mitarbeiterId)).filter(Boolean);
+    return zugewiesene.length > 0 && zugewiesene.every((m) => m.privatFuer);
+  };
+
   // Un projet est masqué s'il a au moins un Termin et qu'AUCUN de ses
-  // Termine n'est visible (c-à-d. tous privés et non-possédés par moi).
+  // Termine n'est visible (c-à-d. tous privés et non-possédés par moi),
+  // ou si TOUS ses Termine sont privés (projet technique "Privat" — jamais
+  // affiché, même à son propriétaire : rien dans Projekte, rien nulle part).
   const sichtbareProjekte = data.projekte.filter((p) => {
     const alleTermine = data.baustellen.filter((b) => b.projektId === p.id);
     if (alleTermine.length === 0) return true;
+    if (alleTermine.every(istBaustellePrivat)) return false;
     return alleTermine.some(istBaustelleSichtbar);
+  });
+
+  // Idem côté Kunden : le client technique "Privat" (et tout client dont
+  // tous les Termine sont exclusivement privés) reste invisible partout.
+  const sichtbareKunden = data.kunden.filter((k) => {
+    const alleTermine = data.baustellen.filter((b) => b.kundeId === k.id);
+    if (alleTermine.length === 0) return true;
+    return !alleTermine.every(istBaustellePrivat);
   });
 
   // Une absence n'est visible que si elle concerne un profil non-privé,
@@ -1868,10 +1919,10 @@ function BaustellenplanungInnen() {
 
         {page === "projekte" && (
           <ProjekteListPage
-            baustellen={data.baustellen.filter(istBaustelleSichtbar)}
+            baustellen={data.baustellen.filter(istBaustelleSichtbar).filter((b) => !istBaustellePrivat(b))}
             projekte={sichtbareProjekte}
             alleMitarbeiter={sichtbareMitarbeiter}
-            alleKunden={data.kunden}
+            alleKunden={sichtbareKunden}
             isAdmin={isAdmin}
             onOpenSidebar={() => setSidebarOpen(true)}
             onNew={() => openNewBaustelle()}
@@ -1885,8 +1936,8 @@ function BaustellenplanungInnen() {
 
         {page === "kunden" && (
           <KundenListPage
-            kunden={data.kunden}
-            baustellen={data.baustellen}
+            kunden={sichtbareKunden}
+            baustellen={data.baustellen.filter((b) => !istBaustellePrivat(b))}
             onOpenSidebar={() => setSidebarOpen(true)}
             onNew={openNewKunde}
             onEdit={openEditKunde}
@@ -1932,7 +1983,7 @@ function BaustellenplanungInnen() {
           setForm={setForm}
           mitarbeiterListe={isAdmin ? sichtbareMitarbeiter : sichtbareMitarbeiter.filter((m) => m.id === currentUserId)}
           alleMitarbeiter={sichtbareMitarbeiter}
-          alleKunden={data.kunden}
+          alleKunden={sichtbareKunden}
           alleProjekte={sichtbareProjekte}
           onSelectKunde={applyKundeToForm}
           onToggleMitarbeiter={toggleFormMitarbeiter}
@@ -1970,7 +2021,7 @@ function BaustellenplanungInnen() {
         <ProjektModal
           form={projektForm}
           setForm={setProjektForm}
-          alleKunden={data.kunden}
+          alleKunden={sichtbareKunden}
           onSave={saveProjekt}
           onDelete={projektForm.id ? deleteProjekt : null}
           onClose={() => setProjektModalOpen(false)}
@@ -3865,15 +3916,18 @@ function VerfuegbarkeitPruefen({ baustellen, mitarbeiter, abwesenheiten, onBaust
                         → {ABWESENHEIT_LABEL[a.typ] || a.typ} ({a.beginn}{a.beginn !== a.ende ? ` – ${a.ende}` : ""}){a.notiz ? ` — ${a.notiz}` : ""}
                       </div>
                     ))}
-                    {konflikte.map((b) => (
+                    {konflikte.map((b) => {
+                      const istMaskiert = /priv[eé]/i.test(b.kunde || "");
+                      return (
                       <div
                         key={b.id}
-                        onClick={() => onBaustelleClick(b)}
-                        style={{ fontSize: 11.5, color: COLORS.textMuted, cursor: "pointer", paddingLeft: 17 }}
+                        onClick={istMaskiert ? undefined : () => onBaustelleClick(b)}
+                        style={{ fontSize: 11.5, color: COLORS.textMuted, cursor: istMaskiert ? "default" : "pointer", paddingLeft: 17 }}
                       >
-                        → {b.kunde} ({b.beginn}{b.beginn !== b.ende ? ` – ${b.ende}` : ""}{formatZeitraum(b) ? `, ${formatZeitraum(b)}` : ""})
+                        → {istMaskiert ? "Belegt" : b.kunde} ({b.beginn}{b.beginn !== b.ende ? ` – ${b.ende}` : ""}{formatZeitraum(b) ? `, ${formatZeitraum(b)}` : ""})
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 ))}
               </div>
