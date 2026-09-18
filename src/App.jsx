@@ -488,6 +488,17 @@ function formatAdresse(b) {
   const zeile2 = [b.plz, b.stadt].filter(Boolean).join(" ");
   return [b.strasse, zeile2].filter(Boolean).join(", ");
 }
+// Libellé à afficher pour un Termin dans une vue partagée (calendrier général,
+// tooltips…) : un vrai rendez-vous privé (istPrivat, visible uniquement par
+// son propriétaire — jamais par des tiers) garde son intitulé réel derrière
+// le cadenas ; un simple blocage de calendrier public (kunde/description
+// "Privat", visible par TOUT LE MONDE) est affiché de façon neutre — aucune
+// allusion au mot "Privat" pour qui n'est pas le propriétaire.
+function kundeLabelFuerAnzeige(b, istPrivat) {
+  if (istPrivat) return b.kunde;
+  if (/priv[eé]/i.test(b.kunde || "") || /priv[eé]/i.test(b.beschreibung || "")) return "Belegt";
+  return b.kunde;
+}
 // Ouvre Google Maps avec l'itinéraire depuis la position actuelle de
 // l'utilisateur (Google Maps la détecte automatiquement) vers l'adresse.
 function mapsRichtungUrl(b) {
@@ -2533,7 +2544,7 @@ function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, abwesenh
                         display: "flex", alignItems: "center", gap: 4, overflow: "hidden", minWidth: 0,
                         background: "#F0EFEA",
                       }}
-                      title={aktiveMitarbeiter.length ? `${b.kunde} — ${aktiveMitarbeiter.map((m) => m.name).join(", ")}` : b.kunde}
+                      title={aktiveMitarbeiter.length ? `${kundeLabelFuerAnzeige(b, aktiveMitarbeiter.length > 0 && aktiveMitarbeiter.every((m) => m.privatFuer))} — ${aktiveMitarbeiter.map((m) => m.name).join(", ")}` : kundeLabelFuerAnzeige(b, false)}
                     >
                       <span style={{ display: "flex", gap: 2, flexShrink: 0 }}>
                         {aktiveMitarbeiter.length > 0 ? (
@@ -2545,7 +2556,7 @@ function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, abwesenh
                         )}
                       </span>
                       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
-                        {aktiveMitarbeiter.length > 0 && aktiveMitarbeiter.every((m) => m.privatFuer) && "🔒 "}{b.kunde}
+                        {aktiveMitarbeiter.length > 0 && aktiveMitarbeiter.every((m) => m.privatFuer) && "🔒 "}{kundeLabelFuerAnzeige(b, aktiveMitarbeiter.length > 0 && aktiveMitarbeiter.every((m) => m.privatFuer))}
                       </span>
                     </div>
                   );
@@ -2672,7 +2683,7 @@ function ResourceView({ dates, mitarbeiter, baustellen, alleMitarbeiter, abwesen
                       }}
                     >
                       <div style={{ fontWeight: 700, color: COLORS.textDark, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {istPrivat && "🔒 "}{b.kunde}
+                        {istPrivat && "🔒 "}{kundeLabelFuerAnzeige(b, istPrivat)}
                       </div>
                       {formatAdresse(b) && (
                         <div style={{ color: COLORS.textMuted, fontSize: 10.5, display: "flex", alignItems: "center", gap: 3, minWidth: 0, overflow: "hidden" }}>
