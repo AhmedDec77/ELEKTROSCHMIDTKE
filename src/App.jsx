@@ -488,17 +488,6 @@ function formatAdresse(b) {
   const zeile2 = [b.plz, b.stadt].filter(Boolean).join(" ");
   return [b.strasse, zeile2].filter(Boolean).join(", ");
 }
-// Libellé à afficher pour un Termin dans une vue partagée (calendrier général,
-// tooltips…) : un vrai rendez-vous privé (istPrivat, visible uniquement par
-// son propriétaire — jamais par des tiers) garde son intitulé réel derrière
-// le cadenas ; un simple blocage de calendrier public (kunde/description
-// "Privat", visible par TOUT LE MONDE) est affiché de façon neutre — aucune
-// allusion au mot "Privat" pour qui n'est pas le propriétaire.
-function kundeLabelFuerAnzeige(b, istPrivat) {
-  if (istPrivat) return b.kunde;
-  if (/priv[eé]/i.test(b.kunde || "") || /priv[eé]/i.test(b.beschreibung || "")) return "Belegt";
-  return b.kunde;
-}
 // Ouvre Google Maps avec l'itinéraire depuis la position actuelle de
 // l'utilisateur (Google Maps la détecte automatiquement) vers l'adresse.
 function mapsRichtungUrl(b) {
@@ -1181,47 +1170,6 @@ function BaustellenplanungInnen() {
     return { kundeId: privatKunde.id, projektId: privatProjekt.id };
   };
 
-  // Crée un Termin générique "Privat" sur le(s) calendrier(s) public(s) des
-  // propriétaires des profils privés concernés, pour marquer le créneau
-  // comme occupé — sans jamais révéler le motif réel du rendez-vous privé.
-  const blockiereOeffentlichenKalender = async (zuweisungen, beginn, ende, samstagAktiv, sonntagAktiv) => {
-    const eigentuemerIds = [...new Set(
-      zuweisungen
-        .map((z) => data.mitarbeiter.find((m) => m.id === z.mitarbeiterId))
-        .filter((m) => m && m.privatFuer)
-        .map((m) => m.privatFuer)
-    )];
-    if (eigentuemerIds.length === 0) return;
-
-    const ids = await holePrivatKundeUndProjekt();
-    if (!ids) return;
-    const { kundeId: privatKundeId, projektId: privatProjektId } = ids;
-
-    for (const eigentuemerId of eigentuemerIds) {
-      const { data: neueBaustelle, error: bErr } = await supabase
-        .from("baustellen")
-        .insert({
-          projekt_id: privatProjektId, kunde_id: privatKundeId, kunde: "Privat",
-          kontakt_name: "", kontakt_telefon: "", beschreibung: "",
-          strasse: "", plz: "", stadt: "",
-          beginn, ende, samstag_aktiv: samstagAktiv, sonntag_aktiv: sonntagAktiv,
-        })
-        .select().single();
-      if (bErr) { setError(`Fehler beim Blockieren: ${bErr.message}`); continue; }
-      const { error: zErr } = await supabase.from("zuweisungen").insert({ baustelle_id: neueBaustelle.id, mitarbeiter_id: eigentuemerId, beginn, ende });
-      if (zErr) { setError(`Fehler beim Blockieren: ${zErr.message}`); continue; }
-      setData((d) => ({
-        ...d,
-        baustellen: [...d.baustellen, {
-          id: neueBaustelle.id, projektId: privatProjektId, kundeId: privatKundeId, kunde: "Privat",
-          kontaktName: "", kontaktTelefon: "", beschreibung: "", strasse: "", plz: "", stadt: "",
-          beginn, ende, samstagAktiv, sonntagAktiv, startzeit: "", endzeit: "",
-          zuweisungen: [{ mitarbeiterId: eigentuemerId, beginn, ende }],
-        }],
-      }));
-    }
-  };
-
   const saveBaustelle = async () => {
     if (!form.kunde.trim() || !form.beginn || !form.ende) return;
     const outOfRange = form.zuweisungen.filter((z) => z.beginn < form.beginn || z.ende > form.ende);
@@ -1372,23 +1320,6 @@ function BaustellenplanungInnen() {
     }));
     setError(null);
     setModalOpen(false);
-
-    // Si ce NOUVEAU Termin n'est affecté qu'à des profils privés (ex. Amin
-    // réserve directement sur "Amin 2"), on lui demande s'il souhaite aussi
-    // bloquer son calendrier public, sans révéler le motif à personne.
-    const istNeuerTermin = !form.id;
-    const alleZuweisungenPrivat = form.zuweisungen.length > 0 && form.zuweisungen.every((z) => {
-      const m = data.mitarbeiter.find((mm) => mm.id === z.mitarbeiterId);
-      return m && m.privatFuer;
-    });
-    if (istNeuerTermin && alleZuweisungenPrivat) {
-      const blockieren = window.confirm(
-        "Dieser private Termin ist nur auf deinem privaten Kalender sichtbar.\n\nMöchtest du zusätzlich deinen normalen (öffentlichen) Kalender für diesen Zeitraum als belegt markieren, ohne den Grund zu zeigen — damit dich niemand dafür einplant?\n\nOK = ja, blockieren.\nAbbrechen = nein, Zeitraum bleibt für andere frei."
-      );
-      if (blockieren) {
-        await blockiereOeffentlichenKalender(form.zuweisungen, form.beginn, form.ende, form.samstagAktiv, form.sonntagAktiv);
-      }
-    }
   };
   const deleteBaustelle = async () => {
     const { error: err } = await supabase.from("baustellen").delete().eq("id", form.id);
@@ -2544,7 +2475,7 @@ function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, abwesenh
                         display: "flex", alignItems: "center", gap: 4, overflow: "hidden", minWidth: 0,
                         background: "#F0EFEA",
                       }}
-                      title={aktiveMitarbeiter.length ? `${kundeLabelFuerAnzeige(b, aktiveMitarbeiter.length > 0 && aktiveMitarbeiter.every((m) => m.privatFuer))} — ${aktiveMitarbeiter.map((m) => m.name).join(", ")}` : kundeLabelFuerAnzeige(b, false)}
+                      title={aktiveMitarbeiter.length ? `${b.kunde} — ${aktiveMitarbeiter.map((m) => m.name).join(", ")}` : b.kunde}
                     >
                       <span style={{ display: "flex", gap: 2, flexShrink: 0 }}>
                         {aktiveMitarbeiter.length > 0 ? (
@@ -2556,7 +2487,7 @@ function MonthView({ grid, currentDate, baustellenFor, alleMitarbeiter, abwesenh
                         )}
                       </span>
                       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
-                        {aktiveMitarbeiter.length > 0 && aktiveMitarbeiter.every((m) => m.privatFuer) && "🔒 "}{kundeLabelFuerAnzeige(b, aktiveMitarbeiter.length > 0 && aktiveMitarbeiter.every((m) => m.privatFuer))}
+                        {aktiveMitarbeiter.length > 0 && aktiveMitarbeiter.every((m) => m.privatFuer) && "🔒 "}{b.kunde}
                       </span>
                     </div>
                   );
@@ -2683,7 +2614,7 @@ function ResourceView({ dates, mitarbeiter, baustellen, alleMitarbeiter, abwesen
                       }}
                     >
                       <div style={{ fontWeight: 700, color: COLORS.textDark, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {istPrivat && "🔒 "}{kundeLabelFuerAnzeige(b, istPrivat)}
+                        {istPrivat && "🔒 "}{b.kunde}
                       </div>
                       {formatAdresse(b) && (
                         <div style={{ color: COLORS.textMuted, fontSize: 10.5, display: "flex", alignItems: "center", gap: 3, minWidth: 0, overflow: "hidden" }}>
@@ -3927,18 +3858,15 @@ function VerfuegbarkeitPruefen({ baustellen, mitarbeiter, abwesenheiten, onBaust
                         → {ABWESENHEIT_LABEL[a.typ] || a.typ} ({a.beginn}{a.beginn !== a.ende ? ` – ${a.ende}` : ""}){a.notiz ? ` — ${a.notiz}` : ""}
                       </div>
                     ))}
-                    {konflikte.map((b) => {
-                      const istMaskiert = /priv[eé]/i.test(b.kunde || "");
-                      return (
+                    {konflikte.map((b) => (
                       <div
                         key={b.id}
-                        onClick={istMaskiert ? undefined : () => onBaustelleClick(b)}
-                        style={{ fontSize: 11.5, color: COLORS.textMuted, cursor: istMaskiert ? "default" : "pointer", paddingLeft: 17 }}
+                        onClick={() => onBaustelleClick(b)}
+                        style={{ fontSize: 11.5, color: COLORS.textMuted, cursor: "pointer", paddingLeft: 17 }}
                       >
-                        → {istMaskiert ? "Belegt" : b.kunde} ({b.beginn}{b.beginn !== b.ende ? ` – ${b.ende}` : ""}{formatZeitraum(b) ? `, ${formatZeitraum(b)}` : ""})
+                        → {b.kunde} ({b.beginn}{b.beginn !== b.ende ? ` – ${b.ende}` : ""}{formatZeitraum(b) ? `, ${formatZeitraum(b)}` : ""})
                       </div>
-                      );
-                    })}
+                    ))}
                   </div>
                 ))}
               </div>
