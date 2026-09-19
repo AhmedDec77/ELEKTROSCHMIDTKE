@@ -4740,16 +4740,16 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
   // Génère le corps du tableau + calcule où se trouve la colonne "Dauer",
   // pour que le total (Summe) s'aligne verticalement dessus — utilisé par
   // le rapport mensuel légal ET le rapport hebdomadaire.
-  const zeichneStundennachweisTabelle = (doc, autoTable, startY, marginX, head, body, dauerSpalteIndex) => {
+  const zeichneStundennachweisTabelle = (doc, autoTable, startY, marginX, head, body, dauerSpalteIndex, columnStyles) => {
     let dauerSpalteX = marginX;
     autoTable(doc, {
       startY,
       margin: { left: marginX, right: marginX },
       head: [head],
       body,
-      styles: { fontSize: 8, cellPadding: 1.6, halign: "center" },
+      styles: { fontSize: 8, cellPadding: 1.6, halign: "center", overflow: "linebreak", valign: "middle" },
       headStyles: { fillColor: [230, 228, 222], textColor: 20, fontStyle: "bold", fontSize: 7.5 },
-      columnStyles: { 0: { halign: "left" } },
+      columnStyles: { 0: { halign: "left" }, ...(columnStyles || {}) },
       theme: "grid",
       didDrawCell: (data) => {
         if (data.section === "head" && data.column.index === dauerSpalteIndex) dauerSpalteX = data.cell.x;
@@ -4875,16 +4875,30 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
     doc.text(`Aufzeichnung für die Zeit vom: ${formatDatumDE(wochenBeginn)} bis zum ${formatDatumDE(wochenEnde)}`, marginX, y);
     y += 7;
 
-    const wochenHead = ["Datum der\nArbeitsleistung", "Kunde", "Adresse", "Leistung", "Uhrzeit Beginn\nder Arbeitsleistung", "Uhrzeit Ende\nder Arbeitsleistung", "Pause\nin Min.", "Dauer der\nArbeitsleistung (Std.)", "Tagessumme\n(Std.)", "Datum der\nAufzeichnung"];
+    // Pas de colonne "Datum der Aufzeichnung" ici : elle n'apporte rien au
+    // rapport hebdomadaire (elle sert uniquement au suivi légal mensuel).
+    // Largeurs fixes pour que "Leistung" reste lisible (texte libre plus
+    // long) et que les colonnes chiffrées restent compactes.
+    const wochenHead = ["Datum", "Kunde", "Adresse", "Leistung", "Beginn", "Ende", "Pause\n(Min.)", "Dauer\n(Std.)", "Tages-\nsumme"];
+    const wochenColumnStyles = {
+      0: { halign: "left", cellWidth: 18 },
+      1: { halign: "left", cellWidth: 24 },
+      2: { halign: "left", cellWidth: 32 },
+      3: { halign: "left", cellWidth: 50 },
+      4: { cellWidth: 14 },
+      5: { cellWidth: 14 },
+      6: { cellWidth: 12 },
+      7: { cellWidth: 13 },
+      8: { cellWidth: 13 },
+    };
     const body = zeilenDerWoche.map((z) => {
       const datumText = z.zeilenIndex === 0 ? formatDatumDE(z.datum) : "";
-      const aufzeichnungText = z.zeilenIndex === 0 ? formatDatumDE(aufzeichnungsDaten[z.datum] || "") : "";
       const tagesSummeText = z.zeilenIndex === 0 && z.tagesSumme ? String(z.tagesSumme) : "";
-      if (z.art === "arbeit") return [datumText, z.kunde || "", z.adresse || "", z.leistung || "", z.beginn, z.ende, String(z.pauseMin), String(z.dauerStd), tagesSummeText, aufzeichnungText];
-      if (z.art === "abwesenheit") return [datumText, "", "", z.leistung || "", PDF_ABWESENHEIT_LABEL[z.label] || z.label, "", "", String(z.dauerStd), tagesSummeText, aufzeichnungText];
-      return [datumText, "", "", "", "----------", "----------", "", "", "", ""];
+      if (z.art === "arbeit") return [datumText, z.kunde || "", z.adresse || "", z.leistung || "", z.beginn, z.ende, String(z.pauseMin), String(z.dauerStd), tagesSummeText];
+      if (z.art === "abwesenheit") return [datumText, "", "", z.leistung || "", PDF_ABWESENHEIT_LABEL[z.label] || z.label, "", "", String(z.dauerStd), tagesSummeText];
+      return [datumText, "", "", "", "----------", "----------", "", "", ""];
     });
-    const dauerSpalteX = zeichneStundennachweisTabelle(doc, autoTable, y, marginX, wochenHead, body, 7);
+    const dauerSpalteX = zeichneStundennachweisTabelle(doc, autoTable, y, marginX, wochenHead, body, 7, wochenColumnStyles);
 
     let finalY = doc.lastAutoTable.finalY + 8;
     doc.setFont("helvetica", "bold");
