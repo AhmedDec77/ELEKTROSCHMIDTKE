@@ -4821,14 +4821,14 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
       const eintraegeTag = eintraege.filter((e) => e.datum === ds && Number(e.stunden) > 0);
       const dauerStd = Math.round(eintraegeTag.reduce((s, e) => s + (Number(e.stunden) || 0), 0) * 4) / 4;
       if (dauerStd <= 0) {
-        zeilenDerWoche.push({ datum: ds, art: "leer", zeilenIndex: 0 });
+        zeilenDerWoche.push({ datum: ds, art: "leer", zeilenIndex: 0, tagesSumme: 0 });
         continue;
       }
       summeWoche += dauerStd;
       const nurAbwesenheit = eintraegeTag.every((e) => e.istAbwesenheit);
       if (nurAbwesenheit) {
         const e = eintraegeTag[0];
-        zeilenDerWoche.push({ datum: ds, art: "abwesenheit", zeilenIndex: 0, label: e.kunde, leistung: e.leistung, dauerStd });
+        zeilenDerWoche.push({ datum: ds, art: "abwesenheit", zeilenIndex: 0, label: e.kunde, leistung: e.leistung, dauerStd, tagesSumme: dauerStd });
         continue;
       }
       const pauseMin = 60;
@@ -4850,6 +4850,7 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
           beginn: i === 0 ? tagBeginn : "", ende: i === 0 ? tagEnde : "", pauseMin: i === 0 ? pauseMin : "",
           kunde: e.kunde, adresse: baustelle ? formatAdresse(baustelle) : "", leistung: e.leistung,
           dauerStd: Number(e.stunden) || 0,
+          tagesSumme: i === 0 ? dauerStd : "",
         });
       });
     }
@@ -4874,13 +4875,14 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
     doc.text(`Aufzeichnung für die Zeit vom: ${formatDatumDE(wochenBeginn)} bis zum ${formatDatumDE(wochenEnde)}`, marginX, y);
     y += 7;
 
-    const wochenHead = ["Datum der\nArbeitsleistung", "Kunde", "Adresse", "Leistung", "Uhrzeit Beginn\nder Arbeitsleistung", "Uhrzeit Ende\nder Arbeitsleistung", "Pause\nin Min.", "Dauer der\nArbeitsleistung (Std.)", "Datum der\nAufzeichnung"];
+    const wochenHead = ["Datum der\nArbeitsleistung", "Kunde", "Adresse", "Leistung", "Uhrzeit Beginn\nder Arbeitsleistung", "Uhrzeit Ende\nder Arbeitsleistung", "Pause\nin Min.", "Dauer der\nArbeitsleistung (Std.)", "Tagessumme\n(Std.)", "Datum der\nAufzeichnung"];
     const body = zeilenDerWoche.map((z) => {
       const datumText = z.zeilenIndex === 0 ? formatDatumDE(z.datum) : "";
       const aufzeichnungText = z.zeilenIndex === 0 ? formatDatumDE(aufzeichnungsDaten[z.datum] || "") : "";
-      if (z.art === "arbeit") return [datumText, z.kunde || "", z.adresse || "", z.leistung || "", z.beginn, z.ende, String(z.pauseMin), String(z.dauerStd), aufzeichnungText];
-      if (z.art === "abwesenheit") return [datumText, "", "", z.leistung || "", PDF_ABWESENHEIT_LABEL[z.label] || z.label, "", "", String(z.dauerStd), aufzeichnungText];
-      return [datumText, "", "", "", "----------", "----------", "", "", ""];
+      const tagesSummeText = z.zeilenIndex === 0 && z.tagesSumme ? String(z.tagesSumme) : "";
+      if (z.art === "arbeit") return [datumText, z.kunde || "", z.adresse || "", z.leistung || "", z.beginn, z.ende, String(z.pauseMin), String(z.dauerStd), tagesSummeText, aufzeichnungText];
+      if (z.art === "abwesenheit") return [datumText, "", "", z.leistung || "", PDF_ABWESENHEIT_LABEL[z.label] || z.label, "", "", String(z.dauerStd), tagesSummeText, aufzeichnungText];
+      return [datumText, "", "", "", "----------", "----------", "", "", "", ""];
     });
     const dauerSpalteX = zeichneStundennachweisTabelle(doc, autoTable, y, marginX, wochenHead, body, 7);
 
