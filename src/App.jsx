@@ -4809,20 +4809,51 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
     const marginX = 15;
     let y = 18;
 
-    const tageDerWoche = alleTageZwischen(wochenBeginn, wochenEnde).map((ds) => {
+    // Une ligne du PDF = un CLIENT, et non plus tous les clients d'un jour
+    // fusionnés en une seule ligne : chaque tâche facturable du jour obtient
+    // sa propre ligne avec son propre nom de client et sa propre adresse.
+    // Les colonnes valables pour la journée entière (Datum, Uhrzeit Beginn/
+    // Ende, Pause, Datum der Aufzeichnung) ne sont affichées que sur la
+    // première ligne de chaque jour — même convention que l'export Excel.
+    const zeilenDerWoche = [];
+    let summeWoche = 0;
+    for (const ds of alleTageZwischen(wochenBeginn, wochenEnde)) {
       const eintraegeTag = eintraege.filter((e) => e.datum === ds && Number(e.stunden) > 0);
       const dauerStd = Math.round(eintraegeTag.reduce((s, e) => s + (Number(e.stunden) || 0), 0) * 4) / 4;
-      const nurAbwesenheit = eintraegeTag.length > 0 && eintraegeTag.every((e) => e.istAbwesenheit);
-      const kundeText = [...new Set(eintraegeTag.map((e) => e.kunde).filter(Boolean))].join(", ");
-      const leistungText = [...new Set(eintraegeTag.map((e) => e.leistung).filter(Boolean))].join("; ");
-      if (dauerStd <= 0) return { datum: ds, art: "leer", kundeText: "", leistungText: "" };
-      if (nurAbwesenheit) return { datum: ds, art: "abwesenheit", label: eintraegeTag[0].kunde, dauerStd, kundeText, leistungText };
+      if (dauerStd <= 0) {
+        zeilenDerWoche.push({ datum: ds, art: "leer", zeilenIndex: 0 });
+        continue;
+      }
+      summeWoche += dauerStd;
+      const nurAbwesenheit = eintraegeTag.every((e) => e.istAbwesenheit);
+      if (nurAbwesenheit) {
+        const e = eintraegeTag[0];
+        zeilenDerWoche.push({ datum: ds, art: "abwesenheit", zeilenIndex: 0, label: e.kunde, leistung: e.leistung, dauerStd });
+        continue;
+      }
       const pauseMin = 60;
       const endeDez = 8 + pauseMin / 60 + dauerStd;
       const eh = Math.floor(endeDez), em = Math.round((endeDez - eh) * 60);
-      return { datum: ds, art: "arbeit", beginn: ARBEITSTAG_START, ende: `${String(eh).padStart(2, "0")}:${String(em).padStart(2, "0")}`, pauseMin, dauerStd, kundeText, leistungText };
-    });
-    const summeWoche = Math.round(tageDerWoche.reduce((s, t) => s + (t.dauerStd || 0), 0) * 4) / 4;
+      const tagBeginn = ARBEITSTAG_START;
+      const tagEnde = `${String(eh).padStart(2, "0")}:${String(em).padStart(2, "0")}`;
+      // Retrouve, pour chaque ligne éditable du jour, le chantier correspondant
+      // dans le calendrier (même nom de client, sans réutiliser deux fois le
+      // même chantier) afin d'en extraire l'adresse.
+      const rohDesTages = eintraegeFuerTag(mitarbeiterId, ds, baustellen);
+      const genutzt = new Set();
+      eintraegeTag.forEach((e, i) => {
+        const idx = rohDesTages.findIndex((r, ri) => !genutzt.has(ri) && r.kunde === e.kunde);
+        if (idx !== -1) genutzt.add(idx);
+        const baustelle = idx !== -1 ? baustellen.find((b) => b.id === rohDesTages[idx].baustelleId) : null;
+        zeilenDerWoche.push({
+          datum: ds, art: "arbeit", zeilenIndex: i,
+          beginn: i === 0 ? tagBeginn : "", ende: i === 0 ? tagEnde : "", pauseMin: i === 0 ? pauseMin : "",
+          kunde: e.kunde, adresse: baustelle ? formatAdresse(baustelle) : "", leistung: e.leistung,
+          dauerStd: Number(e.stunden) || 0,
+        });
+      });
+    }
+    summeWoche = Math.round(summeWoche * 4) / 4;
 
     doc.setFont("helvetica", "bold");
     doc.setFontSize(12);
@@ -4843,13 +4874,15 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
     doc.text(`Aufzeichnung für die Zeit vom: ${formatDatumDE(wochenBeginn)} bis zum ${formatDatumDE(wochenEnde)}`, marginX, y);
     y += 7;
 
-    const wochenHead = ["Datum der\nArbeitsleistung", "Kunde", "Leistung", "Uhrzeit Beginn\nder Arbeitsleistung", "Uhrzeit Ende\nder Arbeitsleistung", "Pause\nin Min.", "Dauer der\nArbeitsleistung (Std.)", "Datum der\nAufzeichnung"];
-    const body = tageDerWoche.map((t) => {
-      if (t.art === "arbeit") return [formatDatumDE(t.datum), t.kundeText, t.leistungText, t.beginn, t.ende, String(t.pauseMin), String(t.dauerStd), formatDatumDE(aufzeichnungsDaten[t.datum] || "")];
-      if (t.art === "abwesenheit") return [formatDatumDE(t.datum), t.kundeText, t.leistungText, PDF_ABWESENHEIT_LABEL[t.label] || t.label, "", "", String(t.dauerStd), formatDatumDE(aufzeichnungsDaten[t.datum] || "")];
-      return [formatDatumDE(t.datum), "", "", "----------", "----------", "", "", ""];
+    const wochenHead = ["Datum der\nArbeitsleistung", "Kunde", "Adresse", "Leistung", "Uhrzeit Beginn\nder Arbeitsleistung", "Uhrzeit Ende\nder Arbeitsleistung", "Pause\nin Min.", "Dauer der\nArbeitsleistung (Std.)", "Datum der\nAufzeichnung"];
+    const body = zeilenDerWoche.map((z) => {
+      const datumText = z.zeilenIndex === 0 ? formatDatumDE(z.datum) : "";
+      const aufzeichnungText = z.zeilenIndex === 0 ? formatDatumDE(aufzeichnungsDaten[z.datum] || "") : "";
+      if (z.art === "arbeit") return [datumText, z.kunde || "", z.adresse || "", z.leistung || "", z.beginn, z.ende, String(z.pauseMin), String(z.dauerStd), aufzeichnungText];
+      if (z.art === "abwesenheit") return [datumText, "", "", z.leistung || "", PDF_ABWESENHEIT_LABEL[z.label] || z.label, "", "", String(z.dauerStd), aufzeichnungText];
+      return [datumText, "", "", "", "----------", "----------", "", "", ""];
     });
-    const dauerSpalteX = zeichneStundennachweisTabelle(doc, autoTable, y, marginX, wochenHead, body, 6);
+    const dauerSpalteX = zeichneStundennachweisTabelle(doc, autoTable, y, marginX, wochenHead, body, 7);
 
     let finalY = doc.lastAutoTable.finalY + 8;
     doc.setFont("helvetica", "bold");
