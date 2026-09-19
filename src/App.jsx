@@ -99,6 +99,17 @@ function zeitenUeberlappen(aStart, aEnde, bStart, bEnde) {
   if (!aStart || !aEnde || !bStart || !bEnde) return true;
   return aStart < bEnde && bStart < aEnde;
 }
+// Heure de participation EFFECTIVE d'un employé donné sur un Termin : sa
+// propre Uhrzeit (si définie sur sa zuweisung) prime toujours sur l'heure
+// par défaut du Termin — chaque collègue peut ainsi avoir un horaire
+// différent sur le même rendez-vous, en plus de jours différents.
+function effectiveZeit(baustelle, mitarbeiterId) {
+  const z = (baustelle.zuweisungen || []).find((zz) => zz.mitarbeiterId === mitarbeiterId);
+  return {
+    startzeit: (z && z.startzeit) || baustelle.startzeit || "",
+    endzeit: (z && z.endzeit) || baustelle.endzeit || "",
+  };
+}
 // Calcule le dimanche de Pâques (algorithme de Gauss).
 function osterSonntag(jahr) {
   const a = jahr % 19, b = Math.floor(jahr / 100), c = jahr % 100;
@@ -243,7 +254,8 @@ function eintraegeFuerTag(mitarbeiterId, ds, baustellen) {
     if (/priv[eé]/i.test(b.kunde || "") || /priv[eé]/i.test(b.beschreibung || "")) continue;
     const z = (b.zuweisungen || []).find((zz) => zz.mitarbeiterId === mitarbeiterId);
     if (z && isZuweisungAktivAm(z, dateObj)) {
-      eintraege.push({ baustelleId: b.id, kunde: b.kunde, leistung: b.beschreibung || "", startzeit: b.startzeit || "", endzeit: b.endzeit || "" });
+      const { startzeit, endzeit } = effectiveZeit(b, mitarbeiterId);
+      eintraege.push({ baustelleId: b.id, kunde: b.kunde, leistung: b.beschreibung || "", startzeit, endzeit });
     }
   }
   return eintraege;
@@ -285,13 +297,16 @@ function stundenGebuchtFuerPeriode(mitarbeiterId, periodeBeginn, periodeEnde, ba
       return z && isZuweisungAktivAm(z, new Date(tag + "T00:00:00"));
     });
     if (aktive.length === 0) continue;
-    const mitZeiten = aktive.filter((b) => b.startzeit && b.endzeit);
-    const ohneZeiten = aktive.filter((b) => !(b.startzeit && b.endzeit));
+    // Chaque Termin est évalué avec l'heure PROPRE de cet employé (si elle
+    // diffère de l'heure par défaut du Termin), et non l'heure globale.
+    const aktiveMitEffektiverZeit = aktive.map((b) => ({ b, ...effectiveZeit(b, mitarbeiterId) }));
+    const mitZeiten = aktiveMitEffektiverZeit.filter((e) => e.startzeit && e.endzeit);
+    const ohneZeiten = aktiveMitEffektiverZeit.filter((e) => !(e.startzeit && e.endzeit));
     let tagesSumme = 0;
     if (mitZeiten.length > 0) {
       // Heures précisées : brutes, la pause déjeuner (1h) n'est pas payée
       // et se déduit une seule fois par jour, pas par chantier.
-      const rohTotal = mitZeiten.reduce((s, b) => s + stundenProTag(b), 0);
+      const rohTotal = mitZeiten.reduce((s, e) => s + stundenProTag({ ...e.b, startzeit: e.startzeit, endzeit: e.endzeit }), 0);
       tagesSumme += Math.max(0, rohTotal - Math.min(1, rohTotal));
     }
     if (ohneZeiten.length > 0) {
@@ -313,8 +328,9 @@ function findeKonflikteFuerVerfuegbarkeit(mitarbeiterId, von, bis, uhrzeitVon, u
     for (const b of baustellen) {
       const z = (b.zuweisungen || []).find((zz) => zz.mitarbeiterId === mitarbeiterId);
       if (!z || !isZuweisungAktivAm(z, new Date(tag + "T00:00:00"))) continue;
-      if (uhrzeitVon && uhrzeitBis && b.startzeit && b.endzeit) {
-        if (!zeitenUeberlappen(uhrzeitVon, uhrzeitBis, b.startzeit, b.endzeit)) continue;
+      const { startzeit: effStart, endzeit: effEnde } = effectiveZeit(b, mitarbeiterId);
+      if (uhrzeitVon && uhrzeitBis && effStart && effEnde) {
+        if (!zeitenUeberlappen(uhrzeitVon, uhrzeitBis, effStart, effEnde)) continue;
       }
       gefunden.set(b.id, b);
     }
@@ -324,7 +340,7 @@ function findeKonflikteFuerVerfuegbarkeit(mitarbeiterId, von, bis, uhrzeitVon, u
 // Compatibilité avec les anciennes données (mitarbeiterIds sans dates propres)
 function normalizeBaustelle(b) {
   if (b.zuweisungen) return b;
-  const zuweisungen = (b.mitarbeiterIds || []).map((id) => ({ mitarbeiterId: id, beginn: b.beginn, ende: b.ende }));
+  const zuweisungen = (b.mitarbeiterIds || []).map((id) => ({ mitarbeiterId: id, beginn: b.beginn, ende: b.ende, startzeit: "", endzeit: "" }));
   return { ...b, zuweisungen };
 }
 function uid() {
@@ -366,7 +382,13 @@ function mapBaustelleRow(row, zuweisungenRows) {
     endzeit: row.endzeit ? row.endzeit.slice(0, 5) : "",
     zuweisungen: (zuweisungenRows || [])
       .filter((z) => z.baustelle_id === row.id)
-      .map((z) => ({ mitarbeiterId: z.mitarbeiter_id, beginn: z.beginn, ende: z.ende })),
+      .map((z) => ({
+        mitarbeiterId: z.mitarbeiter_id, beginn: z.beginn, ende: z.ende,
+        // Heure PROPRE à cet employé pour ce Termin — vide = hérite de
+        // l'heure par défaut du Termin (baustelle.startzeit/endzeit).
+        startzeit: z.startzeit ? z.startzeit.slice(0, 5) : "",
+        endzeit: z.endzeit ? z.endzeit.slice(0, 5) : "",
+      })),
   };
 }
 function mapKundeRow(row) {
@@ -499,6 +521,15 @@ function formatZeitraum(b) {
   if (b.startzeit && b.endzeit) return `${b.startzeit} – ${b.endzeit}`;
   if (b.startzeit) return `ab ${b.startzeit}`;
   if (b.endzeit) return `bis ${b.endzeit}`;
+  return "";
+}
+// Variante de formatZeitraum qui tient compte de l'heure PROPRE à un employé
+// donné (effectiveZeit), pour l'affichage dans une ligne/vue individuelle.
+function formatZeitraumFuer(b, mitarbeiterId) {
+  const { startzeit, endzeit } = effectiveZeit(b, mitarbeiterId);
+  if (startzeit && endzeit) return `${startzeit} – ${endzeit}`;
+  if (startzeit) return `ab ${startzeit}`;
+  if (endzeit) return `bis ${endzeit}`;
   return "";
 }
 function formatProjektNummer(p) {
@@ -1044,7 +1075,7 @@ function BaustellenplanungInnen() {
       id: null,
       beginn: start,
       ende: start,
-      zuweisungen: initialMitarbeiterId ? [{ mitarbeiterId: initialMitarbeiterId, beginn: start, ende: start }] : [],
+      zuweisungen: initialMitarbeiterId ? [{ mitarbeiterId: initialMitarbeiterId, beginn: start, ende: start, startzeit: "", endzeit: "" }] : [],
     });
     setModalOpen(true);
   };
@@ -1068,7 +1099,7 @@ function BaustellenplanungInnen() {
       strasse: a.adresse,
       beginn: start,
       ende: start,
-      zuweisungen: a.zugewiesenAn ? [{ mitarbeiterId: a.zugewiesenAn, beginn: start, ende: start }] : [],
+      zuweisungen: a.zugewiesenAn ? [{ mitarbeiterId: a.zugewiesenAn, beginn: start, ende: start, startzeit: "", endzeit: "" }] : [],
     });
     setModalOpen(true);
   };
@@ -1086,7 +1117,10 @@ function BaustellenplanungInnen() {
         for (const oz of other.zuweisungen || []) {
           if (oz.mitarbeiterId === z.mitarbeiterId
             && rangesOverlap(z.beginn, z.ende, oz.beginn, oz.ende)
-            && zeitenUeberlappen(candidateForm.startzeit, candidateForm.endzeit, other.startzeit, other.endzeit)) {
+            && zeitenUeberlappen(
+                 z.startzeit || candidateForm.startzeit, z.endzeit || candidateForm.endzeit,
+                 oz.startzeit || other.startzeit, oz.endzeit || other.endzeit
+               )) {
             conflicts.push({ mitarbeiterId: z.mitarbeiterId, kunde: other.kunde, beginn: oz.beginn, ende: oz.ende });
           }
         }
@@ -1278,7 +1312,10 @@ function BaustellenplanungInnen() {
         const oeffentlich = zuweisungenMitSpiegelung.find((z) => z.mitarbeiterId === privat.privatFuer);
         const dejaVorhanden = zuweisungenMitSpiegelung.some((z) => z.mitarbeiterId === privat.id);
         if (oeffentlich && !dejaVorhanden) {
-          zuweisungenMitSpiegelung.push({ mitarbeiterId: privat.id, beginn: oeffentlich.beginn, ende: oeffentlich.ende });
+          zuweisungenMitSpiegelung.push({
+            mitarbeiterId: privat.id, beginn: oeffentlich.beginn, ende: oeffentlich.ende,
+            startzeit: oeffentlich.startzeit, endzeit: oeffentlich.endzeit,
+          });
         }
       });
 
@@ -1288,6 +1325,8 @@ function BaustellenplanungInnen() {
         mitarbeiter_id: z.mitarbeiterId,
         beginn: z.beginn,
         ende: z.ende,
+        startzeit: z.startzeit || null,
+        endzeit: z.endzeit || null,
       }));
       const { error: zErr } = await supabase.from("zuweisungen").insert(rows);
       if (zErr) { setError(`Fehler beim Speichern der Zuweisungen: ${zErr.message}`); return; }
@@ -1341,7 +1380,7 @@ function BaustellenplanungInnen() {
       ...f,
       zuweisungen: exists
         ? f.zuweisungen.filter((z) => z.mitarbeiterId !== id)
-        : [...f.zuweisungen, { mitarbeiterId: id, beginn: f.beginn, ende: f.ende }],
+        : [...f.zuweisungen, { mitarbeiterId: id, beginn: f.beginn, ende: f.ende, startzeit: "", endzeit: "" }],
     }));
   };
   const updateFormZuweisung = (id, field, value) => {
@@ -1350,10 +1389,18 @@ function BaustellenplanungInnen() {
       zuweisungen: f.zuweisungen.map((z) => {
         if (z.mitarbeiterId !== id) return z;
         let updated = { ...z, [field]: value };
-        // Reste toujours dans la période du projet
-        if (updated.beginn < f.beginn) updated.beginn = f.beginn;
-        if (updated.ende > f.ende) updated.ende = f.ende;
-        if (updated.beginn > updated.ende) updated[field === "beginn" ? "ende" : "beginn"] = updated[field];
+        if (field === "beginn" || field === "ende") {
+          // Reste toujours dans la période du projet
+          if (updated.beginn < f.beginn) updated.beginn = f.beginn;
+          if (updated.ende > f.ende) updated.ende = f.ende;
+          if (updated.beginn > updated.ende) updated[field === "beginn" ? "ende" : "beginn"] = updated[field];
+        } else if (field === "startzeit" || field === "endzeit") {
+          // Heure PROPRE à cet employé (facultative) — ne doit jamais finir
+          // avant de commencer, si les deux sont renseignées.
+          if (updated.startzeit && updated.endzeit && updated.startzeit > updated.endzeit) {
+            updated[field === "startzeit" ? "endzeit" : "startzeit"] = updated[field];
+          }
+        }
         return updated;
       }),
     }));
@@ -2630,10 +2677,10 @@ function ResourceView({ dates, mitarbeiter, baustellen, alleMitarbeiter, abwesen
                           </a>
                         </div>
                       )}
-                      {formatZeitraum(b) && (
+                      {formatZeitraumFuer(b, person.id) && (
                         <div style={{ color: COLORS.textMuted, fontSize: 10.5, display: "flex", alignItems: "center", gap: 3, minWidth: 0, overflow: "hidden" }}>
                           <Clock size={9} style={{ flexShrink: 0 }} />
-                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{formatZeitraum(b)}</span>
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{formatZeitraumFuer(b, person.id)}</span>
                         </div>
                       )}
                       {b.zuweisungen && b.zuweisungen.length > 1 && alleMitarbeiter && (
@@ -2912,7 +2959,7 @@ function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, alle
           </Field>
         </div>
         <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: -6, marginBottom: 12 }}>
-          Jeder Mitarbeiter kann einen eigenen Zeitraum haben, aber nur innerhalb der Termindauer.
+          Jeder Mitarbeiter kann einen eigenen Zeitraum UND eine eigene Uhrzeit haben, aber nur innerhalb der Termindauer.
         </div>
         {enthaeltWochenende(form.beginn, form.ende) && (
           <div style={{ display: "flex", gap: 16, marginTop: -4, marginBottom: 14, background: "#FFF7ED", border: "1px solid #FDE1B8", borderRadius: 8, padding: "9px 12px" }}>
@@ -2930,18 +2977,21 @@ function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, alle
           </div>
         )}
         <div style={{ display: "flex", gap: 10 }}>
-          <Field label="Uhrzeit von (optional)" style={{ flex: 1 }}>
+          <Field label="Uhrzeit von (Standard, optional)" style={{ flex: 1 }}>
             <input
               type="time" style={inputStyle} value={form.startzeit}
               onChange={(e) => setForm({ ...form, startzeit: e.target.value })}
             />
           </Field>
-          <Field label="Uhrzeit bis (optional)" style={{ flex: 1 }}>
+          <Field label="Uhrzeit bis (Standard, optional)" style={{ flex: 1 }}>
             <input
               type="time" style={inputStyle} value={form.endzeit}
               onChange={(e) => setForm({ ...form, endzeit: e.target.value })}
             />
           </Field>
+        </div>
+        <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: -6, marginBottom: 12 }}>
+          Gilt für alle zugewiesenen Mitarbeiter, außer ein Mitarbeiter hat unten eine eigene Uhrzeit eingetragen.
         </div>
 
         <Field label="Zugewiesene Mitarbeiter">
@@ -2981,6 +3031,36 @@ function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, alle
                         onChange={(e) => onUpdateZuweisung(z.mitarbeiterId, "ende", e.target.value)}
                       />
                     </div>
+                    <div style={{ display: "flex", gap: 8, marginTop: 6, alignItems: "center" }}>
+                      <input
+                        type="time"
+                        title="Eigene Uhrzeit von (leer = Standardzeit des Termins)"
+                        style={{ ...inputStyle, padding: "6px 9px", fontSize: 12.5 }}
+                        value={z.startzeit || ""}
+                        onChange={(e) => onUpdateZuweisung(z.mitarbeiterId, "startzeit", e.target.value)}
+                      />
+                      <input
+                        type="time"
+                        title="Eigene Uhrzeit bis (leer = Standardzeit des Termins)"
+                        style={{ ...inputStyle, padding: "6px 9px", fontSize: 12.5 }}
+                        value={z.endzeit || ""}
+                        onChange={(e) => onUpdateZuweisung(z.mitarbeiterId, "endzeit", e.target.value)}
+                      />
+                      {(z.startzeit || z.endzeit) && (
+                        <button
+                          onClick={() => { onUpdateZuweisung(z.mitarbeiterId, "startzeit", ""); onUpdateZuweisung(z.mitarbeiterId, "endzeit", ""); }}
+                          title="Eigene Uhrzeit entfernen (Standardzeit des Termins übernehmen)"
+                          style={{ border: "none", background: "transparent", cursor: "pointer", color: COLORS.textMuted, display: "flex", padding: 2, flexShrink: 0 }}
+                        >
+                          <X size={13} />
+                        </button>
+                      )}
+                    </div>
+                    {!(z.startzeit || z.endzeit) && (form.startzeit || form.endzeit) && (
+                      <div style={{ fontSize: 10.5, color: COLORS.textMuted, marginTop: 3 }}>
+                        Übernimmt Standardzeit des Termins ({form.startzeit || "—"} – {form.endzeit || "—"})
+                      </div>
+                    )}
                     {myConflicts.length > 0 && (
                       <div style={{ marginTop: 6, fontSize: 11.5, color: "#B42318", fontWeight: 600 }}>
                         ⚠ Bereits eingeplant bei {myConflicts.map((c) => `${c.kunde} (${c.beginn} – ${c.ende})`).join(", ")}
