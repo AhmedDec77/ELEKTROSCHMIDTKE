@@ -171,10 +171,6 @@ const STANDARD_TAGESKAPAZITAET = 8; // 08:00–17:00, moins 1h de pause déjeune
 // commence — les semaines antérieures (avant l'existence de cette fonktion)
 // ne sont jamais signalées.
 const ZEITERFASSUNG_TRACKING_START = "2026-09-03";
-// À partir de cette heure, si "Arbeit beginnen" n'a pas encore été pressé,
-// on considère que la journée est probablement déjà terminée et on propose
-// de saisir directement début + fin plutôt que de démarrer maintenant.
-const TAG_SPAETER_SCHWELLE = "18:00";
 
 // Nombre d'heures que représente un Termin pour UNE journée : basé sur
 // l'heure de début/fin si précisée. Recadré sur 08:00–17:00, sauf si le
@@ -619,7 +615,7 @@ function BaustellenplanungInnen() {
   const [data, setData] = useState({ mitarbeiter: [], baustellen: [], kunden: [], projekte: [], abwesenheiten: [], stundennachweis: [], arbeitszeiten: [], pausen: [], anfragen: [] });
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(null);
-  const [page, setPage] = useState("pointeuse"); // pointeuse | kalender | projekte | kunden
+  const [page, setPage] = useState("kalender"); // kalender | projekte | kunden
 
   const [view, setView] = useState("woche"); // tag | woche | monat
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -636,7 +632,6 @@ function BaustellenplanungInnen() {
   const EMPTY_ANFRAGE_FORM = { id: null, adresse: "", kunde: "", beschreibung: "", kontaktName: "", kontaktTelefon: "", status: "offen", zugewiesenAn: null, notiz: "" };
   const [anfrageModalOpen, setAnfrageModalOpen] = useState(false);
   const [anfrageForm, setAnfrageForm] = useState(EMPTY_ANFRAGE_FORM);
-  const [arbeitszeitModalGeschlossen, setArbeitszeitModalGeschlossen] = useState(false);
   const [stundennachweisErinnerungGeschlossen, setStundennachweisErinnerungGeschlossen] = useState(false);
   const [kundeForm, setKundeForm] = useState(EMPTY_KUNDE_FORM);
   const [projektModalOpen, setProjektModalOpen] = useState(false);
@@ -709,11 +704,6 @@ function BaustellenplanungInnen() {
   const me = data.mitarbeiter.find((m) => m.authUserId === authSession?.user?.id) || null;
   const currentUserId = me?.id || null;
   const isAdmin = !!me?.istAdmin;
-
-  useEffect(() => {
-    if (me?.zeiterfassungBefreit && page === "pointeuse") setPage("kalender");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [me?.id]);
 
   const switchUser = async () => {
     await supabase.auth.signOut();
@@ -843,71 +833,6 @@ function BaustellenplanungInnen() {
     const { error: err } = await supabase.from("abwesenheiten").delete().eq("id", id);
     if (err) { setError(`Fehler beim Löschen: ${err.message}`); return; }
     setData((d) => ({ ...d, abwesenheiten: d.abwesenheiten.filter((a) => a.id !== id) }));
-  };
-
-  // --- Stempeluhr (pointeuse) ---
-  // Un seul enregistrement Beginn/Ende par employé et par jour (le premier
-  // "Arbeit beginnen" du jour, le dernier "Arbeit beenden" du jour) — pas
-  // par rendez-vous, pour éviter de multiplier les clics.
-  const stempelBeginn = async (mitarbeiterId, gewaehlteZeit) => {
-    const heute = fmt(new Date());
-    const jetzt = gewaehlteZeit || new Date().toTimeString().slice(0, 5);
-    const bestehend = data.arbeitszeiten.find((a) => a.mitarbeiterId === mitarbeiterId && a.datum === heute);
-    const { data: row, error: err } = await supabase
-      .from("arbeitszeiten")
-      .upsert({ mitarbeiter_id: mitarbeiterId, datum: heute, beginn: bestehend?.beginn || jetzt }, { onConflict: "mitarbeiter_id,datum" })
-      .select()
-      .single();
-    if (err) { setError(`Fehler beim Stempeln: ${err.message}`); return; }
-    const neu = mapArbeitszeitRow(row);
-    setData((d) => ({ ...d, arbeitszeiten: [neu, ...d.arbeitszeiten.filter((a) => a.id !== neu.id)] }));
-  };
-  const stempelEnde = async (mitarbeiterId) => {
-    const heute = fmt(new Date());
-    const jetzt = new Date().toTimeString().slice(0, 5);
-    const { data: row, error: err } = await supabase
-      .from("arbeitszeiten")
-      .upsert({ mitarbeiter_id: mitarbeiterId, datum: heute, ende: jetzt }, { onConflict: "mitarbeiter_id,datum" })
-      .select()
-      .single();
-    if (err) { setError(`Fehler beim Stempeln: ${err.message}`); return; }
-    const neu = mapArbeitszeitRow(row);
-    setData((d) => ({ ...d, arbeitszeiten: [neu, ...d.arbeitszeiten.filter((a) => a.id !== neu.id)] }));
-  };
-  // Saisie/correction manuelle (rattrapage d'un oubli, ou ajustement).
-  const nachtragenArbeitszeit = async (mitarbeiterId, datum, beginn, ende) => {
-    const { data: row, error: err } = await supabase
-      .from("arbeitszeiten")
-      .upsert({ mitarbeiter_id: mitarbeiterId, datum, beginn: beginn || null, ende: ende || null }, { onConflict: "mitarbeiter_id,datum" })
-      .select()
-      .single();
-    if (err) { setError(`Fehler beim Speichern: ${err.message}`); return false; }
-    const neu = mapArbeitszeitRow(row);
-    setData((d) => ({ ...d, arbeitszeiten: [neu, ...d.arbeitszeiten.filter((a) => a.id !== neu.id)] }));
-    return true;
-  };
-  const pauseBeginnen = async (mitarbeiterId, motiv) => {
-    const heute = fmt(new Date());
-    const jetzt = new Date().toTimeString().slice(0, 5);
-    const { data: row, error: err } = await supabase
-      .from("pausen")
-      .insert({ mitarbeiter_id: mitarbeiterId, datum: heute, beginn: jetzt, motiv: motiv || "" })
-      .select()
-      .single();
-    if (err) { setError(`Fehler beim Pausieren: ${err.message}`); return; }
-    setData((d) => ({ ...d, pausen: [mapPauseRow(row), ...d.pausen] }));
-  };
-  const pauseBeenden = async (pauseId) => {
-    const jetzt = new Date().toTimeString().slice(0, 5);
-    const { data: row, error: err } = await supabase
-      .from("pausen")
-      .update({ ende: jetzt })
-      .eq("id", pauseId)
-      .select()
-      .single();
-    if (err) { setError(`Fehler beim Beenden der Pause: ${err.message}`); return; }
-    const neu = mapPauseRow(row);
-    setData((d) => ({ ...d, pausen: d.pausen.map((p) => (p.id === neu.id ? neu : p)) }));
   };
 
   // --- Anfragen (demandes clients entrantes) ---
@@ -1463,40 +1388,6 @@ function BaustellenplanungInnen() {
     return !m || !m.privatFuer || m.privatFuer === currentUserId;
   });
 
-  // Jours passés (30 derniers jours) où j'avais au moins un rendez-vous
-  // planifié, mais où la pointeuse n'a pas d'heure de début ET de fin
-  // complète — à faire confirmer/rattraper.
-  const fehlendeArbeitszeitTage = (() => {
-    if (!currentUserId || me?.zeiterfassungBefreit) return [];
-    const debutSemaineEnCours = fmt(startOfWeek(new Date()));
-    const limite = ZEITERFASSUNG_TRACKING_START; // pas d'historique avant la mise en place de la pointeuse
-    const tage = new Map(); // datum -> [{ kunde }]
-    data.baustellen.forEach((b) => {
-      (b.zuweisungen || []).forEach((z) => {
-        if (z.mitarbeiterId !== currentUserId) return;
-        for (const ds of alleTageZwischen(z.beginn, z.ende)) {
-          // Seules les semaines déjà terminées sont concernées — pas la
-          // semaine en cours, dont les jours peuvent encore être pointés
-          // normalement d'ici la fin de la semaine.
-          if (ds >= debutSemaineEnCours || ds < limite) continue;
-          // Un jour où l'employé est enregistré absent (n'importe quel
-          // motif) toute la journée n'a pas besoin d'être documenté.
-          const estAbsentToutLeJour = data.abwesenheiten.some((a) => a.mitarbeiterId === currentUserId && a.beginn <= ds && ds <= a.ende);
-          if (estAbsentToutLeJour) continue;
-          if (!tage.has(ds)) tage.set(ds, []);
-          tage.get(ds).push(b.kunde);
-        }
-      });
-    });
-    return Array.from(tage.entries())
-      .filter(([ds]) => {
-        const a = data.arbeitszeiten.find((aa) => aa.mitarbeiterId === currentUserId && aa.datum === ds);
-        return !a || !a.beginn || !a.ende;
-      })
-      .map(([datum, kunden]) => ({ datum, kunden }))
-      .sort((a, b) => (a.datum < b.datum ? -1 : 1));
-  })();
-
   // Semaines déjà terminées où j'avais des rendez-vous, mais où le
   // Stundennachweis (Wochendetail) n'a jamais été enregistré — pour éviter
   // d'attendre la fin du mois et n'avoir plus que de vagues souvenirs.
@@ -1651,7 +1542,6 @@ function BaustellenplanungInnen() {
 
         <div style={{ padding: "0 10px 10px", display: "flex", flexDirection: "column", gap: 2 }}>
           {[
-            ...(me?.zeiterfassungBefreit ? [] : [["pointeuse", Clock, "Zeiterfassung"]]),
             ["kalender", CalendarIcon, "Kalender"],
             ["projekte", ClipboardList, "Projekte"],
             ["kunden", Building2, "Kunden"],
@@ -1801,23 +1691,6 @@ function BaustellenplanungInnen() {
 
       {/* MAIN */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-        {page === "pointeuse" && (
-          <PointeuseSeite
-            me={me}
-            baustellen={data.baustellen}
-            arbeitszeiten={data.arbeitszeiten}
-            pausen={data.pausen}
-            vorwocheOffeneTage={fehlendeArbeitszeitTage}
-            onOpenSidebar={() => setSidebarOpen(true)}
-            onBeginn={(zeit) => stempelBeginn(currentUserId, zeit)}
-            onEnde={() => stempelEnde(currentUserId)}
-            onPauseBeginnen={(motiv) => pauseBeginnen(currentUserId, motiv)}
-            onPauseBeenden={(pauseId) => pauseBeenden(pauseId)}
-            onNachtragenOeffnen={() => setArbeitszeitModalGeschlossen(false)}
-            onNachtragHeute={(beginn, ende) => nachtragenArbeitszeit(currentUserId, fmt(new Date()), beginn, ende)}
-            onBaustelleClick={openEditBaustelle}
-          />
-        )}
         {page === "kalender" && (
           <>
             <div className="app-topbar" style={{ background: COLORS.card, borderBottom: `1px solid ${COLORS.border}`, padding: "14px 22px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
@@ -1940,8 +1813,6 @@ function BaustellenplanungInnen() {
             mitarbeiter={sichtbareMitarbeiter}
             abwesenheiten={sichtbareAbwesenheiten}
             stundennachweis={data.stundennachweis}
-            arbeitszeiten={data.arbeitszeiten}
-            pausen={data.pausen}
             isAdmin={isAdmin}
             currentUserId={currentUserId}
             onOpenSidebar={() => setSidebarOpen(true)}
@@ -2014,14 +1885,6 @@ function BaustellenplanungInnen() {
           onSave={saveProjekt}
           onDelete={projektForm.id ? deleteProjekt : null}
           onClose={() => setProjektModalOpen(false)}
-        />
-      )}
-
-      {fehlendeArbeitszeitTage.length > 0 && !arbeitszeitModalGeschlossen && (
-        <ArbeitszeitNachtragenModal
-          tage={fehlendeArbeitszeitTage}
-          onSave={(datum, beginn, ende) => nachtragenArbeitszeit(currentUserId, datum, beginn, ende)}
-          onClose={() => setArbeitszeitModalGeschlossen(true)}
         />
       )}
 
@@ -3788,7 +3651,7 @@ function KundenListPage({ kunden, baustellen, onOpenSidebar, onNew, onEdit, erro
   );
 }
 
-function RessourcenPage({ baustellen, mitarbeiter, abwesenheiten, stundennachweis, arbeitszeiten, pausen, isAdmin, currentUserId, onOpenSidebar, onBaustelleClick, onAddAbwesenheit, onRemoveAbwesenheit, onSaveStundennachweis, error }) {
+function RessourcenPage({ baustellen, mitarbeiter, abwesenheiten, stundennachweis, isAdmin, currentUserId, onOpenSidebar, onBaustelleClick, onAddAbwesenheit, onRemoveAbwesenheit, onSaveStundennachweis, error }) {
   const [modus, setModus] = useState("verfuegbarkeit"); // verfuegbarkeit | stunden | abwesenheiten
   // Un profil privé (ex. "Amin 2") n'a pas sa place dans Ressourcen — c'est
   // un calendrier à usage strictement personnel, jamais un employé à gérer.
@@ -3842,8 +3705,6 @@ function RessourcenPage({ baustellen, mitarbeiter, abwesenheiten, stundennachwei
             baustellen={baustellen}
             abwesenheiten={abwesenheiten}
             stundennachweis={stundennachweis}
-            arbeitszeiten={arbeitszeiten}
-            pausen={pausen}
             isAdmin={isAdmin}
             currentUserId={currentUserId}
             onSave={onSaveStundennachweis}
@@ -4043,368 +3904,6 @@ function StundenUebersicht({ baustellen, mitarbeiter, abwesenheiten }) {
   );
 }
 
-// Bouton "Arbeit beginnen" intelligent : si l'heure actuelle est encore
-// raisonnable, demande de confirmer/ajuster l'heure de début réelle (au
-// cas où le login a lieu après le début effectif du travail). Si la
-// journée est déjà bien avancée (>= TAG_SPAETER_SCHWELLE), propose
-// directement de saisir début ET fin plutôt que de "commencer maintenant".
-function SmartBeginnControl({ onBeginn, onNachtragHeute, gross }) {
-  const jetzt = new Date().toTimeString().slice(0, 5);
-  const istSpaet = jetzt >= TAG_SPAETER_SCHWELLE;
-  const [modus, setModus] = useState(null); // null | "confirm" | "nachtrag"
-  const [zeit, setZeit] = useState(jetzt);
-  const [nachtragBeginn, setNachtragBeginn] = useState(ARBEITSTAG_START);
-  const [nachtragEnde, setNachtragEnde] = useState(jetzt);
-  const [laedt, setLaedt] = useState(false);
-
-  const pad = gross ? "20px 0" : "9px 0";
-  const fontSize = gross ? 18 : 13;
-  const radius = gross ? 14 : 8;
-  const iconSize = gross ? 22 : 14;
-
-  const btnStyle = (bg) => ({
-    display: "flex", alignItems: "center", justifyContent: "center", gap: gross ? 10 : 7, width: "100%",
-    background: bg, color: "#fff", border: "none", borderRadius: radius, padding: pad,
-    fontSize, fontWeight: gross ? 800 : 700, cursor: "pointer", opacity: laedt ? 0.6 : 1,
-  });
-  const boxStyle = { background: gross ? "#F6F5F2" : "#2A3038", borderRadius: radius, padding: gross ? 18 : 10 };
-  const labelStyle = { fontSize: gross ? 14 : 11, color: gross ? COLORS.textMuted : COLORS.textLightMuted, marginBottom: gross ? 12 : 7 };
-  const inputStyle2 = { ...inputStyle, flex: 1 };
-
-  if (modus === "confirm") {
-    return (
-      <div style={boxStyle}>
-        <div style={labelStyle}>Wann hast du tatsächlich begonnen?</div>
-        <input type="time" value={zeit} onChange={(e) => setZeit(e.target.value)} style={{ ...inputStyle2, width: "100%", marginBottom: 8 }} />
-        <div style={{ display: "flex", gap: 6 }}>
-          <button onClick={() => setModus(null)} style={{ ...btnStyle("#4A5568"), flex: 1 }}>Abbrechen</button>
-          <button
-            onClick={async () => { setLaedt(true); await onBeginn(zeit); setLaedt(false); }}
-            disabled={laedt} style={{ ...btnStyle(COLORS.brandGreen), flex: 1.4 }}
-          >
-            Bestätigen
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (modus === "nachtrag") {
-    return (
-      <div style={boxStyle}>
-        <div style={labelStyle}>Es ist bereits {jetzt} — trag die heutige Arbeitszeit direkt ein:</div>
-        <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-          <input type="time" value={nachtragBeginn} onChange={(e) => setNachtragBeginn(e.target.value)} style={inputStyle2} />
-          <input type="time" value={nachtragEnde} onChange={(e) => setNachtragEnde(e.target.value)} style={inputStyle2} />
-        </div>
-        <div style={{ display: "flex", gap: 6 }}>
-          <button onClick={() => setModus(null)} style={{ ...btnStyle("#4A5568"), flex: 1 }}>Abbrechen</button>
-          <button
-            onClick={async () => { setLaedt(true); await onNachtragHeute(nachtragBeginn, nachtragEnde); setLaedt(false); }}
-            disabled={laedt} style={{ ...btnStyle(COLORS.accent), flex: 1.4 }}
-          >
-            Speichern
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <button
-      onClick={() => (istSpaet ? setModus("nachtrag") : (setZeit(jetzt), setModus("confirm")))}
-      style={btnStyle(COLORS.brandGreen)}
-    >
-      <Clock size={iconSize} /> Arbeit beginnen
-    </button>
-  );
-}
-
-function PointeuseSeite({ me, baustellen, arbeitszeiten, pausen, vorwocheOffeneTage, onOpenSidebar, onBeginn, onEnde, onPauseBeginnen, onPauseBeenden, onNachtragenOeffnen, onNachtragHeute, onBaustelleClick }) {
-  const [laedt, setLaedt] = useState(false);
-  const heute = fmt(new Date());
-  const heutigeZeit = (arbeitszeiten || []).find((a) => a.mitarbeiterId === me.id && a.datum === heute);
-  const heutigePausen = (pausen || []).filter((p) => p.mitarbeiterId === me.id && p.datum === heute);
-  const offenePause = heutigePausen.find((p) => !p.ende);
-  const gesamtPauseMin = heutigePausen.reduce((s, p) => {
-    if (!p.beginn || !p.ende) return s;
-    const [bh, bm] = p.beginn.split(":").map(Number);
-    const [eh, em] = p.ende.split(":").map(Number);
-    return s + Math.max(0, eh * 60 + em - (bh * 60 + bm));
-  }, 0);
-  const heutigeTermine = (baustellen || [])
-    .filter((b) => (b.zuweisungen || []).some((z) => z.mitarbeiterId === me.id && isZuweisungAktivAm(z, new Date())))
-    .sort((a, b) => (a.startzeit || "").localeCompare(b.startzeit || ""));
-
-  const klick = async (fn) => {
-    setLaedt(true);
-    await fn();
-    setLaedt(false);
-  };
-
-  const grossBtn = (bg) => ({
-    display: "flex", alignItems: "center", justifyContent: "center", gap: 10, width: "100%",
-    background: bg, color: "#fff", border: "none", borderRadius: 14, padding: "20px 0",
-    fontSize: 18, fontWeight: 800, cursor: "pointer", opacity: laedt ? 0.6 : 1,
-  });
-
-  let inhalt;
-  if (vorwocheOffeneTage && vorwocheOffeneTage.length > 0 && !heutigeZeit?.beginn) {
-    inhalt = (
-      <div style={{ background: "#FDECEA", border: "1px solid #F3C7C0", borderRadius: 14, padding: 22, textAlign: "center" }}>
-        <div style={{ fontSize: 32, marginBottom: 8 }}>🔒</div>
-        <div style={{ fontSize: 16, fontWeight: 800, color: "#B42318", marginBottom: 6 }}>Vorwoche nicht dokumentiert</div>
-        <div style={{ fontSize: 13, color: COLORS.textMuted, marginBottom: 16 }}>
-          Bitte zuerst die fehlenden Tage der letzten Woche nachtragen, bevor die neue Woche beginnen kann.
-        </div>
-        <button onClick={onNachtragenOeffnen} style={grossBtn(COLORS.accent)}>Jetzt nachtragen</button>
-      </div>
-    );
-  } else if (!heutigeZeit?.beginn) {
-    inhalt = <SmartBeginnControl onBeginn={onBeginn} onNachtragHeute={onNachtragHeute} gross />;
-  } else if (!heutigeZeit.ende) {
-    if (offenePause) {
-      inhalt = (
-        <div style={{ background: "#F6F5F2", borderRadius: 14, padding: 22, textAlign: "center" }}>
-          <div style={{ fontSize: 14, color: COLORS.textMuted, marginBottom: 14 }}>
-            ⏸ Pause seit <strong>{offenePause.beginn}</strong>{offenePause.motiv ? ` (${offenePause.motiv})` : ""}
-          </div>
-          <button onClick={() => klick(() => onPauseBeenden(offenePause.id))} disabled={laedt} style={grossBtn(COLORS.brandGreen)}>
-            <Clock size={22} /> Pause beenden
-          </button>
-        </div>
-      );
-    } else {
-      inhalt = (
-        <div style={{ background: "#F6F5F2", borderRadius: 14, padding: 22, textAlign: "center" }}>
-          <div style={{ fontSize: 14, color: COLORS.textMuted, marginBottom: 14 }}>
-            🟢 Im Dienst seit <strong>{heutigeZeit.beginn}</strong>
-            {gesamtPauseMin > 0 && ` · ${gesamtPauseMin} Min. Pause bisher`}
-          </div>
-          <div style={{ display: "flex", gap: 10 }}>
-            <button onClick={() => klick(() => onPauseBeginnen(""))} disabled={laedt} style={{ ...grossBtn("#4A5568"), flex: 1 }}>
-              Pause
-            </button>
-            <button onClick={() => klick(onEnde)} disabled={laedt} style={{ ...grossBtn(COLORS.accent), flex: 1.4 }}>
-              <Clock size={22} /> Beenden
-            </button>
-          </div>
-        </div>
-      );
-    }
-  } else {
-    inhalt = (
-      <div style={{ background: "#F0F7F0", border: `1px solid ${hexToRgba(COLORS.brandGreen, 0.3)}`, borderRadius: 14, padding: 22, textAlign: "center" }}>
-        <div style={{ fontSize: 32, marginBottom: 6 }}>✓</div>
-        <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 4 }}>Heute erledigt</div>
-        <div style={{ fontSize: 13, color: COLORS.textMuted }}>
-          {heutigeZeit.beginn} – {heutigeZeit.ende}{gesamtPauseMin > 0 && ` (${gesamtPauseMin} Min. Pause)`}
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ flex: 1, overflowY: "auto", background: COLORS.bgMain }}>
-      <div className="app-topbar" style={{ background: COLORS.card, borderBottom: `1px solid ${COLORS.border}`, padding: "14px 22px", display: "flex", alignItems: "center", gap: 14 }}>
-        <button
-          className="hamburger-btn"
-          onClick={onOpenSidebar}
-          style={{
-            alignItems: "center", justifyContent: "center", width: 44, height: 44, borderRadius: 10,
-            border: `1px solid ${COLORS.border}`, background: COLORS.card, cursor: "pointer", color: COLORS.textDark,
-            flexShrink: 0, WebkitTapHighlightColor: "transparent",
-          }}
-        >
-          <MenuIcon size={20} />
-        </button>
-        <div style={{ fontSize: 18, fontWeight: 800 }}>Hallo, {me.name}</div>
-      </div>
-      <div style={{ padding: 22, maxWidth: 480, margin: "0 auto" }}>
-        {inhalt}
-
-        {heutigeTermine.length > 0 && (
-          <div style={{ marginTop: 24 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.textMuted, textTransform: "uppercase", marginBottom: 8 }}>
-              Heute geplant
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {heutigeTermine.map((b) => (
-                <div
-                  key={b.id}
-                  onClick={() => onBaustelleClick(b)}
-                  style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 12, cursor: "pointer" }}
-                >
-                  <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 2 }}>{b.kunde}</div>
-                  {formatAdresse(b) && (
-                    <div style={{ fontSize: 11.5, color: COLORS.textMuted, display: "flex", alignItems: "center", gap: 4 }}>
-                      <MapPin size={10} /> {formatAdresse(b)}
-                    </div>
-                  )}
-                  {b.startzeit && b.endzeit && (
-                    <div style={{ fontSize: 11.5, color: COLORS.textMuted, marginTop: 2 }}>{b.startzeit} – {b.endzeit}</div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function StempeluhrWidget({ mitarbeiterId, arbeitszeiten, pausen, vorwocheOffeneTage, onBeginn, onEnde, onPauseBeginnen, onPauseBeenden, onNachtragenOeffnen, onNachtragHeute }) {
-  const [laedt, setLaedt] = useState(false);
-  const heute = fmt(new Date());
-  const heutigeZeit = arbeitszeiten.find((a) => a.mitarbeiterId === mitarbeiterId && a.datum === heute);
-  const heutigePausen = pausen.filter((p) => p.mitarbeiterId === mitarbeiterId && p.datum === heute);
-  const offenePause = heutigePausen.find((p) => !p.ende);
-  const gesamtPauseMin = heutigePausen.reduce((s, p) => {
-    if (!p.beginn || !p.ende) return s;
-    const [bh, bm] = p.beginn.split(":").map(Number);
-    const [eh, em] = p.ende.split(":").map(Number);
-    return s + Math.max(0, eh * 60 + em - (bh * 60 + bm));
-  }, 0);
-
-  const klick = async (fn) => {
-    setLaedt(true);
-    await fn();
-    setLaedt(false);
-  };
-
-  const btnStyle = (bg) => ({
-    display: "flex", alignItems: "center", justifyContent: "center", gap: 7, width: "100%",
-    background: bg, color: "#fff", border: "none", borderRadius: 8, padding: "9px 0",
-    fontSize: 13, fontWeight: 700, cursor: "pointer", opacity: laedt ? 0.6 : 1,
-  });
-
-  // Une nouvelle journée démarre toujours librement — sauf si une semaine
-  // PRÉCÉDENTE (déjà terminée) n'a pas été entièrement documentée : dans ce
-  // cas, "Arbeit beginnen" reste bloqué jusqu'à régularisation.
-  if (!heutigeZeit?.beginn) {
-    if (vorwocheOffeneTage && vorwocheOffeneTage.length > 0) {
-      return (
-        <div style={{ background: "#3A2018", border: "1px solid #7A3A2A", borderRadius: 8, padding: "9px 10px" }}>
-          <div style={{ fontSize: 11, color: "#F0A07E", fontWeight: 700, marginBottom: 5 }}>
-            🔒 Vorwoche nicht dokumentiert
-          </div>
-          <div style={{ fontSize: 10.5, color: COLORS.textLightMuted, marginBottom: 7 }}>
-            Bitte zuerst die fehlenden Tage der letzten Woche nachtragen, bevor die neue Woche beginnen kann.
-          </div>
-          <button onClick={onNachtragenOeffnen} style={{ ...btnStyle(COLORS.accent) }}>
-            Jetzt nachtragen
-          </button>
-        </div>
-      );
-    }
-    return <SmartBeginnControl onBeginn={onBeginn} onNachtragHeute={onNachtragHeute} />;
-  }
-
-  if (!heutigeZeit.ende) {
-    if (offenePause) {
-      return (
-        <div style={{ background: "#2A3038", borderRadius: 8, padding: "8px 10px" }}>
-          <div style={{ fontSize: 11, color: COLORS.textLightMuted, marginBottom: 6 }}>
-            ⏸ Pause seit {offenePause.beginn}{offenePause.motiv ? ` (${offenePause.motiv})` : ""}
-          </div>
-          <button onClick={() => klick(() => onPauseBeenden(offenePause.id))} disabled={laedt} style={btnStyle(COLORS.brandGreen)}>
-            <Clock size={14} /> Pause beenden
-          </button>
-        </div>
-      );
-    }
-    return (
-      <div style={{ background: "#2A3038", borderRadius: 8, padding: "8px 10px" }}>
-        <div style={{ fontSize: 11, color: COLORS.textLightMuted, marginBottom: 6 }}>
-          🟢 Im Dienst seit {heutigeZeit.beginn}
-          {gesamtPauseMin > 0 && ` · ${gesamtPauseMin} Min. Pause bisher`}
-        </div>
-        <div style={{ display: "flex", gap: 6 }}>
-          <button onClick={() => klick(() => onPauseBeginnen(""))} disabled={laedt} style={{ ...btnStyle("#4A5568"), flex: 1 }}>
-            Pause
-          </button>
-          <button onClick={() => klick(onEnde)} disabled={laedt} style={{ ...btnStyle(COLORS.accent), flex: 1.4 }}>
-            <Clock size={14} /> Beenden
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ background: "#2A3038", borderRadius: 8, padding: "9px 10px", fontSize: 11.5, color: COLORS.textLightMuted, textAlign: "center" }}>
-      ✓ Heute: {heutigeZeit.beginn} – {heutigeZeit.ende}
-      {gesamtPauseMin > 0 && ` (${gesamtPauseMin} Min. Pause)`}
-    </div>
-  );
-}
-
-function ArbeitszeitNachtragenModal({ tage, onSave, onClose }) {
-  const [werte, setWerte] = useState(() =>
-    Object.fromEntries(tage.map((t) => [t.datum, { beginn: "", ende: "", nichtGearbeitet: false }]))
-  );
-  const [speichertGerade, setSpeichertGerade] = useState(false);
-
-  const update = (datum, fields) => setWerte((w) => ({ ...w, [datum]: { ...w[datum], ...fields } }));
-
-  const alleAusgefuellt = tage.every((t) => {
-    const v = werte[t.datum];
-    return v.nichtGearbeitet || (v.beginn && v.ende);
-  });
-
-  const speichern = async () => {
-    setSpeichertGerade(true);
-    for (const t of tage) {
-      const v = werte[t.datum];
-      if (v.nichtGearbeitet) continue;
-      await onSave(t.datum, v.beginn, v.ende);
-    }
-    setSpeichertGerade(false);
-    onClose();
-  };
-
-  return (
-    <div style={overlayStyle}>
-      <div style={{ ...modalStyle, maxWidth: 480 }}>
-        <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 6 }}>⏱ Vergessene Zeiterfassung</div>
-        <div style={{ fontSize: 12.5, color: COLORS.textMuted, marginBottom: 16 }}>
-          An folgenden Tagen gab es Termine, aber keine vollständige Zeiterfassung. Bitte kurz nachtragen:
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 18, maxHeight: 360, overflowY: "auto" }}>
-          {tage.map((t) => {
-            const v = werte[t.datum];
-            return (
-              <div key={t.datum} style={{ background: "#F6F5F2", borderRadius: 8, padding: 12 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>{formatDatumDE(t.datum)}</div>
-                <div style={{ fontSize: 11.5, color: COLORS.textMuted, marginBottom: 8 }}>
-                  {[...new Set(t.kunden)].join(", ")}
-                </div>
-                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: COLORS.textMuted, marginBottom: 8 }}>
-                  <input type="checkbox" checked={v.nichtGearbeitet} onChange={(e) => update(t.datum, { nichtGearbeitet: e.target.checked })} />
-                  Nicht gearbeitet an diesem Tag
-                </label>
-                {!v.nichtGearbeitet && (
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <input type="time" value={v.beginn} onChange={(e) => update(t.datum, { beginn: e.target.value })} style={{ ...inputStyle, flex: 1 }} placeholder="Beginn" />
-                    <input type="time" value={v.ende} onChange={(e) => update(t.datum, { ende: e.target.value })} style={{ ...inputStyle, flex: 1 }} placeholder="Ende" />
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={onClose} style={btnSecondary}>Später</button>
-          <button onClick={speichern} disabled={!alleAusgefuellt || speichertGerade} style={{ ...btnPrimary, flex: 1, opacity: alleAusgefuellt ? 1 : 0.5 }}>
-            {speichertGerade ? "…" : "Speichern"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function AbwesenheitenPage({ mitarbeiter, abwesenheiten, isAdmin, currentUserId, onAdd, onRemove }) {
   const heute = fmt(new Date());
   const [formOffen, setFormOffen] = useState(false);
@@ -4522,7 +4021,7 @@ function AbwesenheitenPage({ mitarbeiter, abwesenheiten, isAdmin, currentUserId,
   );
 }
 
-function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundennachweis, arbeitszeiten, pausen, isAdmin, currentUserId, onSave }) {
+function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundennachweis, isAdmin, currentUserId, onSave }) {
   const heute = new Date();
   const [mitarbeiterId, setMitarbeiterId] = useState(isAdmin ? (mitarbeiter.find((m) => !m.privatFuer)?.id || "") : currentUserId || "");
   const [jahr, setJahr] = useState(heute.getFullYear());
@@ -4566,39 +4065,6 @@ function StundennachweisPage({ mitarbeiter, baustellen, abwesenheiten, stundenna
             kunde: "Feiertag", leistung: "", stunden: STANDARD_TAGESKAPAZITAET, istAbwesenheit: true,
           });
         }
-        continue;
-      }
-
-      // Priorité aux vraies heures pointées (Stempeluhr) si elles existent
-      // pour ce jour : elles définissent le total net réel, réparti entre
-      // les tâches du jour (au prorata de leurs propres heures si connues,
-      // sinon également).
-      const echtePointage = (arbeitszeiten || []).find((a) => a.mitarbeiterId === mitarbeiterId && a.datum === ds && a.beginn && a.ende);
-      if (echtePointage) {
-        const [bh, bm] = echtePointage.beginn.split(":").map(Number);
-        const [eh, em] = echtePointage.ende.split(":").map(Number);
-        const pausenDesTages = (pausen || []).filter((p) => p.mitarbeiterId === mitarbeiterId && p.datum === ds && p.beginn && p.ende);
-        const echtePauseMin = pausenDesTages.reduce((s, p) => {
-          const [ph, pm] = p.beginn.split(":").map(Number);
-          const [qh, qm] = p.ende.split(":").map(Number);
-          return s + Math.max(0, qh * 60 + qm - (ph * 60 + pm));
-        }, 0);
-        const pauseStd = pausenDesTages.length > 0 ? echtePauseMin / 60 : 1; // pause réelle si connue, sinon 60 min par défaut
-        let totalNet = eh + em / 60 - (bh + bm / 60) - pauseStd;
-        if (totalNet < 0) totalNet = 0;
-        const mitZeiten = roh.filter((e) => e.startzeit && e.endzeit);
-        const poids = mitZeiten.length === roh.length && roh.length > 0
-          ? roh.map((e) => {
-              const [sh, sm] = e.startzeit.split(":").map(Number);
-              const [eh2, em2] = e.endzeit.split(":").map(Number);
-              return Math.max(0.01, eh2 + em2 / 60 - (sh + sm / 60));
-            })
-          : roh.map(() => 1);
-        const poidsTotal = poids.reduce((s, p) => s + p, 0) || 1;
-        roh.forEach((e, i) => {
-          const stunden = Math.round(totalNet * (poids[i] / poidsTotal) * 4) / 4;
-          neu.push({ id: `auto-${n++}`, datum: ds, kunde: e.kunde, leistung: e.leistung, stunden });
-        });
         continue;
       }
 
