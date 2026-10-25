@@ -2754,7 +2754,10 @@ function BaustelleModal({ form, setForm, mitarbeiterListe, alleMitarbeiter, alle
             <input style={inputStyle} value={form.kontaktName} onChange={(e) => setForm({ ...form, kontaktName: e.target.value })} placeholder="Name des Kontakts" />
           </Field>
           <Field label="Telefon" style={{ flex: 1 }}>
-            <input type="tel" style={inputStyle} value={form.kontaktTelefon} onChange={(e) => setForm({ ...form, kontaktTelefon: e.target.value })} placeholder="+49 …" />
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input type="tel" style={inputStyle} value={form.kontaktTelefon} onChange={(e) => setForm({ ...form, kontaktTelefon: e.target.value })} placeholder="+49 …" />
+              <TelefonAnrufButton nummer={form.kontaktTelefon} />
+            </div>
           </Field>
         </div>
         <Field label="Beschreibung">
@@ -3493,7 +3496,7 @@ function AnfragenListPage({ anfragen, mitarbeiter, onOpenSidebar, onNew, onEdit,
                   {a.beschreibung && <div style={{ fontSize: 13, marginBottom: 4 }}>{a.beschreibung}</div>}
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 12, fontSize: 11.5, color: COLORS.textMuted }}>
                     {a.kontaktName && <span>{a.kontaktName}</span>}
-                    {a.kontaktTelefon && <span>{a.kontaktTelefon}</span>}
+                    {a.kontaktTelefon && <TelefonLink nummer={a.kontaktTelefon} />}
                     {zugewiesen && <span>→ {zugewiesen.name}</span>}
                   </div>
                   {a.notiz && <div style={{ fontSize: 11.5, color: COLORS.textMuted, fontStyle: "italic", marginTop: 4 }}>{a.notiz}</div>}
@@ -3538,7 +3541,10 @@ function AnfrageModal({ form, setForm, mitarbeiter, onSave, onDelete, onConvert,
             <input style={inputStyle} value={form.kontaktName} onChange={(e) => setForm({ ...form, kontaktName: e.target.value })} />
           </Field>
           <Field label="Telefon" style={{ flex: 1 }}>
-            <input style={inputStyle} value={form.kontaktTelefon} onChange={(e) => setForm({ ...form, kontaktTelefon: e.target.value })} />
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input type="tel" style={inputStyle} value={form.kontaktTelefon} onChange={(e) => setForm({ ...form, kontaktTelefon: e.target.value })} />
+              <TelefonAnrufButton nummer={form.kontaktTelefon} />
+            </div>
           </Field>
         </div>
         <div style={{ display: "flex", gap: 10 }}>
@@ -3635,7 +3641,7 @@ function KundenListPage({ kunden, baustellen, onOpenSidebar, onNew, onEdit, erro
                 )}
                 {k.kontaktName && (
                   <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 3 }}>
-                    {k.kontaktName}{k.kontaktTelefon ? ` · ${k.kontaktTelefon}` : ""}
+                    {k.kontaktName}{k.kontaktTelefon && <> · <TelefonLink nummer={k.kontaktTelefon} /></>}
                   </div>
                 )}
                 <div style={{ fontSize: 11, fontWeight: 700, color: COLORS.accent, marginTop: 8 }}>
@@ -4652,7 +4658,10 @@ function KundeModal({ form, setForm, onSave, onDelete, onClose }) {
             <input style={inputStyle} value={form.kontaktName} onChange={(e) => setForm({ ...form, kontaktName: e.target.value })} placeholder="Name des Kontakts" />
           </Field>
           <Field label="Telefon" style={{ flex: 1 }}>
-            <input type="tel" style={inputStyle} value={form.kontaktTelefon} onChange={(e) => setForm({ ...form, kontaktTelefon: e.target.value })} placeholder="+49 …" />
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input type="tel" style={inputStyle} value={form.kontaktTelefon} onChange={(e) => setForm({ ...form, kontaktTelefon: e.target.value })} placeholder="+49 …" />
+              <TelefonAnrufButton nummer={form.kontaktTelefon} />
+            </div>
           </Field>
         </div>
         <Field label="Straße und Hausnummer">
@@ -4772,6 +4781,50 @@ function ProjektModal({ form, setForm, alleKunden, onSave, onDelete, onClose }) 
         </div>
       </div>
     </div>
+  );
+}
+
+// Numéro de téléphone cliquable : sur mobile, un seul appui ouvre directement
+// le composeur avec le numéro déjà saisi (lien "tel:"). Seuls les chiffres et
+// un "+" initial sont conservés (espaces, tirets, parenthèses ignorés).
+function telefonHref(nummer) {
+  const roh = (nummer || "").trim();
+  if (!roh) return null;
+  const ziffern = roh.replace(/[^\d]/g, "");
+  if (!ziffern) return null;
+  return `tel:${roh.startsWith("+") ? "+" : ""}${ziffern}`;
+}
+
+function TelefonLink({ nummer, style }) {
+  const href = telefonHref(nummer);
+  if (!href) return null;
+  return (
+    <a
+      href={href}
+      onClick={(e) => e.stopPropagation()}
+      style={{ display: "inline-flex", alignItems: "center", gap: 4, color: COLORS.accent, fontWeight: 700, textDecoration: "none", ...style }}
+    >
+      <Phone size={12} /> {nummer}
+    </a>
+  );
+}
+
+// Bouton rond d'appel, placé à côté d'un champ téléphone dans un formulaire.
+function TelefonAnrufButton({ nummer }) {
+  const href = telefonHref(nummer);
+  if (!href) return null;
+  return (
+    <a
+      href={href}
+      title="Anrufen"
+      aria-label="Anrufen"
+      style={{
+        display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+        width: 38, height: 38, borderRadius: "50%", background: COLORS.brandGreen, color: "#fff", textDecoration: "none",
+      }}
+    >
+      <Phone size={16} />
+    </a>
   );
 }
 
