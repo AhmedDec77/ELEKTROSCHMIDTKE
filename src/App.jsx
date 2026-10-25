@@ -3085,12 +3085,15 @@ function ProfileModal({ person, canEdit, onSave, onSendWochenplan, onClose }) {
           </div>
         </Field>
         <Field label="Handy">
-          <div style={{ position: "relative" }}>
-            <Phone size={14} style={{ position: "absolute", left: 10, top: 11, color: COLORS.textMuted }} />
-            <input
-              type="tel" style={{ ...inputStyle, paddingLeft: 30 }} value={telefon}
-              onChange={(e) => setTelefon(e.target.value)} placeholder="+49 151 23456789" disabled={!canEdit}
-            />
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
+              <Phone size={14} style={{ position: "absolute", left: 10, top: 11, color: COLORS.textMuted }} />
+              <input
+                type="tel" style={{ ...inputStyle, paddingLeft: 30 }} value={telefon}
+                onChange={(e) => setTelefon(e.target.value)} placeholder="+49 151 23456789" disabled={!canEdit}
+              />
+            </div>
+            <TelefonAnrufButton nummer={telefon} />
           </div>
         </Field>
         <Field label="Adresse (optional)">
